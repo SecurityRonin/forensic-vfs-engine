@@ -1,0 +1,31 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "rangeStrategy": "bump",
+  "lockFileMaintenance": { "enabled": true },
+  "packageRules": [
+    {
+      "description": "Group SecurityRonin fleet crate bumps into one PR wave",
+      "matchPackagePatterns": [
+        "^forensic-vfs",
+        "^state-history-forensic$",
+        "^ewf$",
+        "^ntfs-core$",
+        "^ext4fs-core$",
+        "^xfs-core$",
+        "^iso9660-forensic$",
+        "^apfs-core$",
+        "^hfsplus-forensic$",
+        "^fat-core$",
+        "^vhd-core$",
+        "^qcow2-core$",
+        "^vmdk-core$",
+        "^vhdx-core$",
+        "^apm-partition-core$",
+        "^dmg-core$",
+        "^aff4$"
+      ],
+      "groupName": "securityronin fleet"
+    }
+  ]
+}

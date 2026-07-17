@@ -1,0 +1,30 @@
+site_name: forensic-vfs-engine
+site_url: https://securityronin.github.io/forensic-vfs-engine/
+repo_url: https://github.com/SecurityRonin/forensic-vfs-engine
+site_description: >-
+  The forensic-vfs registry + resolver — one Vfs::open(path) that detects the
+  container/volume/filesystem stack of a disk image and mounts a read-only
+  dyn FileSystem.
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+
+nav:
+  - Home: index.md
+  - Validation: validation.md
+  - Privacy Policy: privacy.md
+  - Terms of Service: terms.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - pymdownx.superfences
+
+plugins:
+  - search

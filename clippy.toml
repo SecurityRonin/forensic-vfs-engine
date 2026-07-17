@@ -1,0 +1,5 @@
+# Product/format names that look like code identifiers to doc_markdown.
+doc-valid-idents = [
+    "NTFS", "HFS", "HFSX", "APFS", "APM", "GPT", "MBR", "EWF", "AFF4", "DMG",
+    "VHDX", "VMDK", "QCOW2", "ISO", "UDIF", "ExFAT", "..",
+]

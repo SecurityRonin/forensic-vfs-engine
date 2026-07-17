@@ -1,0 +1,80 @@
+[package]
+name = "forensic-vfs-engine"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "Apache-2.0"
+description = "The forensic-vfs registry + resolver: one Vfs::open(path) that detects the container/volume/filesystem stack of a piece of evidence and mounts a read-only dyn FileSystem."
+repository = "https://github.com/SecurityRonin/forensic-vfs-engine"
+authors = ["Albert Hui <albert@securityronin.com>"]
+keywords = ["forensics", "dfir", "filesystem", "disk-image", "vfs"]
+categories = ["filesystem", "parsing"]
+readme = "README.md"
+# The 58 MiB of oracle-validated end-to-end fixtures are for the repo's own tests,
+# not consumers of the crate — keep them out of the published tarball (and under
+# the crates.io size limit). The docs, fuzz harness, and CI configs likewise ship
+# only in the repo.
+exclude = [
+    "tests/",
+    "fuzz/",
+    "docs/",
+    "supply-chain/",
+    "paper/",
+    ".github/",
+    "mkdocs.yml",
+    "renovate.json",
+    "deny.toml",
+    "clippy.toml",
+    ".gitleaks.toml",
+    ".pre-commit-config.yaml",
+]
+
+[dependencies]
+# KNOWLEDGE-tier leaves.
+forensic-vfs = "0.3"
+state-history-forensic = "0.1"
+
+# Batteries-included: every fleet reader is compiled in, non-optional, so the
+# zero-config build resolves the whole container/volume/filesystem stack. Each
+# filesystem reader needs its `vfs` adapter feature; the version floors pin the
+# first published patch that ships that adapter.
+#
+# Container decoders (KNOWLEDGE/CONTAINER readers).
+ewf   = { version = "0.4.1", features = ["vfs"] }
+vhd   = { version = "0.1", package = "vhd-core" }
+qcow2 = { version = "0.3", package = "qcow2-core" }
+vmdk  = { version = "0.8", package = "vmdk-core" }
+vhdx  = { version = "0.3", package = "vhdx-core" }
+dmg   = { version = "0.1", package = "dmg-core" }
+aff4  = { version = "0.2" }
+
+# Volume-system readers (MBR + GPT are pure in-crate parsers; APM is external).
+apm = { version = "0.6", package = "apm-partition-core" }
+
+# Filesystem readers — each needs its `vfs` adapter feature.
+ntfs-core = { version = "0.9.1", features = ["vfs"] }
+ext4fs    = { version = "0.2.2", package = "ext4fs-core", features = ["vfs"] }
+xfs       = { version = "0.1.1", package = "xfs-core", features = ["vfs"] }
+iso       = { version = "0.7.1", package = "iso9660-forensic", features = ["vfs"] }
+apfs-core = { version = "0.2.1", features = ["vfs"] }
+hfsplus   = { version = "0.2.1", package = "hfsplus-forensic", features = ["vfs"] }
+fat       = { version = "0.1.1", package = "fat-core", features = ["vfs"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic                 = { level = "warn", priority = -1 }
+unwrap_used              = "deny"
+expect_used              = "deny"
+module_name_repetitions  = "allow"
+must_use_candidate       = "allow"
+missing_errors_doc       = "allow"
+missing_panics_doc       = "allow"
+doc_markdown             = "allow"
+cast_possible_truncation = "allow"
+cast_possible_wrap       = "allow"
+cast_sign_loss           = "allow"

@@ -1,0 +1,21 @@
+[package]
+name    = "forensic-vfs-engine-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[[bin]]
+name = "fuzz_resolve"
+path = "fuzz_targets/fuzz_resolve.rs"
+test = false
+doc  = false
+
+[dependencies]
+libfuzzer-sys       = "0.4"
+forensic-vfs        = "0.3"
+forensic-vfs-engine = { path = ".." }

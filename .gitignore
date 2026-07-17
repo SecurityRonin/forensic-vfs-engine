@@ -1,0 +1,16 @@
+/target
+# Published library: no committed Cargo.lock (downstreams resolve their own).
+/Cargo.lock
+Cargo.lock.orig
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# cargo-fuzz artifacts
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts
