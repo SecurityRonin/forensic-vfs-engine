@@ -1,6 +1,7 @@
 /target
-# Published library: no committed Cargo.lock (downstreams resolve their own).
-/Cargo.lock
+# Cargo.lock IS committed: this orchestration crate wires ~15 readers, so CI needs a
+# fixed graph for deterministic `cargo deny` / `cargo vet --locked` (matching the
+# audited exemption set). Downstreams still resolve their own.
 Cargo.lock.orig
 
 # OS / editor cruft
