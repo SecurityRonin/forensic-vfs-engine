@@ -1115,6 +1115,21 @@ mod tests {
     }
 
     #[test]
+    fn default_openers_registers_btrfs_ufs_udf() {
+        // The three new filesystem probers grow the registered set from 8 to 11
+        // and expose the BTRFS/UFS/UDF kinds so the resolver can auto-detect them.
+        let kinds: Vec<FsKind> = default_openers()
+            .filesystems()
+            .iter()
+            .map(|p| p.kind())
+            .collect();
+        assert!(kinds.contains(&FsKind::BTRFS), "btrfs prober registered");
+        assert!(kinds.contains(&FsKind::UFS), "ufs prober registered");
+        assert!(kinds.contains(&FsKind::UDF), "udf prober registered");
+        assert_eq!(kinds.len(), 11, "8 existing + 3 new filesystem probers");
+    }
+
+    #[test]
     fn default_is_new_and_probers_report_their_kinds() {
         let _ = Vfs::default().open_source(mem(vec![0u8; 64])).unwrap();
         assert_eq!(NtfsProbe.kind(), FsKind::NTFS);
