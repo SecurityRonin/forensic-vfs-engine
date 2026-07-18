@@ -180,6 +180,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "btrfs-core"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c35184981d47fdfe9a1e535f2bef073b628cad5704e09e77480329601924782"
+dependencies = [
+ "crc",
+ "flate2",
+ "forensic-vfs",
+ "lzo",
+ "ruzstd",
+ "thiserror",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -502,11 +516,12 @@ dependencies = [
 
 [[package]]
 name = "forensic-vfs-engine"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "aff4",
  "apfs-core",
  "apm-partition-core",
+ "btrfs-core",
  "dmg-core",
  "ewf",
  "ext4fs-core",
@@ -519,6 +534,8 @@ dependencies = [
  "qcow2-core",
  "state-history-forensic",
  "tempfile",
+ "udf-forensic",
+ "ufs-core",
  "vhd-core",
  "vhdx-core",
  "vmdk-core",
@@ -776,6 +793,12 @@ checksum = "a991092331e953f600e3c13058504e1002ddf3ebb0b326a7b28d19b7ce681624"
 dependencies = [
  "thiserror",
 ]
+
+[[package]]
+name = "lzo"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "987ae180dd550693b0e370c73131f32910c12469562ec2d5c4a1a92e59ac4128"
 
 [[package]]
 name = "lzvn-core"
@@ -1158,6 +1181,26 @@ name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
+
+[[package]]
+name = "udf-forensic"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fdb818d9d3957b9f8e395b8692a6d7c69e604f84d93754f3ec45635cbc5c947"
+dependencies = [
+ "forensic-vfs",
+ "forensicnomicon",
+]
+
+[[package]]
+name = "ufs-core"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a8d657453d87b1834104d0fe6c1fe297fe9d75862347792b9db11409a107062"
+dependencies = [
+ "forensic-vfs",
+ "thiserror",
+]
 
 [[package]]
 name = "unicode-ident"

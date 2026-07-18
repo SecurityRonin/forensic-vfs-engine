@@ -8,6 +8,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 use std::collections::HashSet;
+use std::io::Cursor;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -238,6 +239,9 @@ pub fn default_openers() -> Openers {
         .filesystem(HfsPlusProbe)
         .filesystem(ExFatProbe)
         .filesystem(FatProbe)
+        .filesystem(UdfProbe)
+        .filesystem(UfsProbe)
+        .filesystem(BtrfsProbe)
         .volume_system(GptProbe)
         .volume_system(MbrProbe)
         .volume_system(ApmProbe)
@@ -518,6 +522,100 @@ impl FileSystemOpen for FatProbe {
             detail: e.to_string(),
             bytes: SmallHex::new(&[]),
         })?;
+        Ok(Arc::new(fs))
+    }
+}
+
+/// UDF (ISO/UDF optical filesystem) prober: recognizes the Volume Recognition
+/// Sequence at sector 16 and mounts `udf_forensic::vfs::UdfVfs`. Delegates the
+/// sniff to `udf_forensic::detect_udf` over the head window (a `Cursor` of the
+/// sniff bytes) so the NSR02/NSR03 UDF mark — the definitive indicator — is
+/// tested without re-deriving the descriptor offsets. The first VRS descriptors
+/// sit at bytes 32769/34817/… (LBA 16+, 2048-byte sectors), inside the window.
+struct UdfProbe;
+
+impl FileSystemOpen for UdfProbe {
+    fn kind(&self) -> FsKind {
+        FsKind::UDF
+    }
+
+    fn probe(&self, w: &SniffWindow) -> Confidence {
+        if udf_forensic::detect_udf(&mut Cursor::new(w.bytes())) {
+            Confidence::Yes {
+                how: "UDF NSR02/NSR03 volume recognition sequence",
+            }
+        } else {
+            Confidence::No
+        }
+    }
+
+    fn open(&self, src: DynSource) -> VfsResult<DynFs> {
+        let len = src.len();
+        let cursor = SourceCursor::new(src, 0, len);
+        let fs = udf_forensic::vfs::UdfVfs::open(cursor)?;
+        Ok(Arc::new(fs))
+    }
+}
+
+/// UFS/FFS filesystem prober: delegates to `ufs::vfs::ufs_probe`, which matches
+/// the UFS2 `fs_magic` (`0x19540119`, at absolute offset 66908) or the UFS1
+/// `fs_magic` (`0x00011954`, at 9564), in either byte order. Only the UFS1 magic
+/// falls inside the resolver's 40 KiB head window; a UFS2 superblock's magic sits
+/// beyond it, so UFS2 auto-detection through the head window is window-limited
+/// (see the module note — this is the resolver's `SNIFF_CAP`, not this wrapper).
+struct UfsProbe;
+
+impl FileSystemOpen for UfsProbe {
+    fn kind(&self) -> FsKind {
+        FsKind::UFS
+    }
+
+    fn probe(&self, w: &SniffWindow) -> Confidence {
+        ufs::vfs::ufs_probe(w)
+    }
+
+    fn open(&self, src: DynSource) -> VfsResult<DynFs> {
+        let fs = ufs::vfs::UfsFs::open(&src)?;
+        Ok(Arc::new(fs))
+    }
+}
+
+/// Absolute byte offset of the btrfs primary-superblock magic: the superblock
+/// sits at `BTRFS_SUPER_INFO_OFFSET` (0x10000) and its `_BHRfS_M` magic is at
+/// +0x40 within it, i.e. 0x10040 (65600).
+const BTRFS_MAGIC_OFFSET: usize = btrfs_core::BTRFS_SUPER_INFO_OFFSET as usize + 0x40;
+
+/// btrfs filesystem prober: matches the `_BHRfS_M` superblock magic at byte
+/// 0x10040 and mounts `btrfs_core::vfs::BtrfsFs`.
+///
+/// That magic (65600) lies **beyond the resolver's 40 KiB head sniff window**, so
+/// the head window in practice never carries it and this declines — btrfs is
+/// registered and correct-by-construction (it succeeds the moment the window
+/// spans the offset) but is not auto-detected through the current head window.
+/// It deliberately does **not** return `Confidence::Maybe`: a `Maybe` would run
+/// `open` on every otherwise-unrecognized source, and `BtrfsFs::open` errors on a
+/// non-btrfs image — turning the "clean unknown / empty container ⇒ `None`"
+/// contract into a loud error (e.g. an all-zero decoded container). Declining
+/// keeps that contract intact; widening the resolver's `SNIFF_CAP` is the fix.
+struct BtrfsProbe;
+
+impl FileSystemOpen for BtrfsProbe {
+    fn kind(&self) -> FsKind {
+        FsKind::BTRFS
+    }
+
+    fn probe(&self, w: &SniffWindow) -> Confidence {
+        if w.has_magic(BTRFS_MAGIC_OFFSET, &btrfs_core::BTRFS_MAGIC) {
+            Confidence::Yes {
+                how: "btrfs _BHRfS_M superblock magic",
+            }
+        } else {
+            Confidence::No
+        }
+    }
+
+    fn open(&self, src: DynSource) -> VfsResult<DynFs> {
+        let fs = btrfs_core::vfs::BtrfsFs::open(&*src)?;
         Ok(Arc::new(fs))
     }
 }

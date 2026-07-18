@@ -1,6 +1,6 @@
 [package]
 name = "forensic-vfs-engine"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 rust-version = "1.88"
 license = "Apache-2.0"
@@ -61,6 +61,9 @@ iso       = { version = "0.7.1", package = "iso9660-forensic", features = ["vfs"
 apfs-core = { version = "0.2.1", features = ["vfs"] }
 hfsplus   = { version = "0.2.1", package = "hfsplus-forensic", features = ["vfs"] }
 fat       = { version = "0.1.1", package = "fat-core", features = ["vfs"] }
+btrfs-core   = { version = "0.1.2", features = ["vfs"] }
+ufs          = { version = "0.1.2", package = "ufs-core", features = ["vfs"] }
+udf-forensic = { version = "0.2.1", features = ["vfs"] }
 
 [dev-dependencies]
 tempfile = "3"
