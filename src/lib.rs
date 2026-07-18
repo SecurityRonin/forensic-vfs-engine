@@ -1,6 +1,6 @@
 //! # forensic-vfs-engine
 //!
-//! The registry + resolver over the `forensic-vfs` contracts: one
+//! The openers registry + resolver over the `forensic-vfs` contracts: one
 //! [`Vfs::open`] that detects the container/volume/filesystem stack of a piece
 //! of evidence and mounts a read-only `dyn FileSystem`. This is the
 //! ORCHESTRATION crate — the one place that depends *down* on every fleet reader.
@@ -14,11 +14,12 @@ use std::sync::Arc;
 use forensic_vfs::adapters::{FileSource, SeekPoolSource, SourceCursor, SubRange};
 use forensic_vfs::read::{le_u32, le_u64};
 use forensic_vfs::{
-    Confidence, ContainerDecoder, ContainerFormat, DynFs, DynSource, FileId, FileSystem,
-    FileSystemProbe, FsKind, FsMeta, Layer, NodeAddr, NodeKind, PathSpec, Registry, SmallHex,
+    Confidence, ContainerFormat, ContainerOpen, DynFs, DynSource, FileId, FileSystem,
+    FileSystemOpen, FsKind, FsMeta, Layer, NodeAddr, NodeKind, Openers, PathSpec, SmallHex,
     SnapshotRef, SniffWindow, VfsError, VfsResult, VolumeDesc, VolumeKind, VolumeScheme,
-    VolumeSystem, VolumeSystemProbe,
+    VolumeSystem, VolumeSystemOpen,
 };
+use forensic_vfs_resolver::SourceOpen;
 use state_history_forensic::epoch::EpochTag;
 
 /// One resolved piece of evidence: its locator plus the mounted filesystem, when
@@ -30,9 +31,9 @@ pub struct Evidence {
     pub fs: Option<DynFs>,
 }
 
-/// The engine handle: the reader registry plus the resolver.
+/// The engine handle: the reader openers plus the resolver.
 pub struct Vfs {
-    registry: Registry,
+    openers: Openers,
 }
 
 impl Default for Vfs {
@@ -42,11 +43,11 @@ impl Default for Vfs {
 }
 
 impl Vfs {
-    /// A `Vfs` with every fleet reader registered ([`default_registry`]).
+    /// A `Vfs` with every fleet reader registered ([`default_openers`]).
     #[must_use]
     pub fn new() -> Self {
         Self {
-            registry: default_registry(),
+            openers: default_openers(),
         }
     }
 
@@ -57,7 +58,7 @@ impl Vfs {
     pub fn open(&self, path: &Path) -> VfsResult<Evidence> {
         let base = open_base(path)?;
         let base_spec = PathSpec::os(path);
-        match self.registry.resolve(base, base_spec.clone(), 0)? {
+        match self.openers.open(base, base_spec.clone(), 0)? {
             Some(r) => Ok(Evidence {
                 root: r.spec,
                 fs: Some(r.fs),
@@ -76,7 +77,7 @@ impl Vfs {
             start: 0,
             len: source.len(),
         });
-        Ok(self.registry.resolve(source, base, 0)?.map(|r| r.fs))
+        Ok(self.openers.open(source, base, 0)?.map(|r| r.fs))
     }
 
     /// Enumerate an APFS volume's snapshots as a time-indexed `[H]` cohort. The
@@ -96,7 +97,7 @@ impl Vfs {
     pub fn snapshots(&self, path: &Path) -> VfsResult<Vec<SnapshotView>> {
         let base = open_base(path)?;
         let base_spec = PathSpec::os(path);
-        let Some(resolved) = self.registry.resolve(base, base_spec, 0)? else {
+        let Some(resolved) = self.openers.open(base, base_spec, 0)? else {
             return Ok(Vec::new());
         };
         if !is_apfs(&resolved.spec) {
@@ -128,8 +129,8 @@ impl Vfs {
         let base = open_base(path)?;
         let base_spec = PathSpec::os(path);
         let resolved = self
-            .registry
-            .resolve(base, base_spec, 0)?
+            .openers
+            .open(base, base_spec, 0)?
             .ok_or(VfsError::Bootstrap {
                 stage: "apfs snapshot",
                 detail: "no filesystem detected in evidence".to_string(),
@@ -223,12 +224,12 @@ fn map_apfs_err(e: apfs_core::ApfsError) -> VfsError {
     }
 }
 
-/// The fleet reader registry: filesystem probers + volume-system probers.
-/// Container decoders and crypto layers register here as those readers grow
-/// their `vfs` features.
+/// The fleet reader openers: filesystem probers + volume-system probers +
+/// container decoders. Crypto (`EncryptionOpen`) and archive (`ArchiveOpen`)
+/// layers register here as those readers grow their `vfs` features.
 #[must_use]
-pub fn default_registry() -> Registry {
-    Registry::new()
+pub fn default_openers() -> Openers {
+    Openers::new()
         .filesystem(NtfsProbe)
         .filesystem(Ext4Probe)
         .filesystem(XfsProbe)
@@ -250,7 +251,7 @@ pub fn default_registry() -> Registry {
 
 /// Resolve the base [`DynSource`] for a path. EWF is multi-segment and opens *by
 /// path* (it discovers `.E02...` itself), so it is handled here rather than as a
-/// single-stream `ContainerDecoder`; everything else is a raw [`FileSource`].
+/// single-stream `ContainerOpen`; everything else is a raw [`FileSource`].
 fn open_base(path: &Path) -> VfsResult<DynSource> {
     if is_ewf(path) {
         let reader = ewf::EwfReader::open(path).map_err(|e| VfsError::Bootstrap {
@@ -272,7 +273,7 @@ fn is_ewf(path: &Path) -> bool {
 /// NTFS filesystem prober: recognizes the `NTFS` OEM id and mounts `ntfs_core::NtfsFs`.
 struct NtfsProbe;
 
-impl FileSystemProbe for NtfsProbe {
+impl FileSystemOpen for NtfsProbe {
     fn kind(&self) -> FsKind {
         FsKind::NTFS
     }
@@ -303,7 +304,7 @@ impl FileSystemProbe for NtfsProbe {
 /// `ext4fs::Ext4Fs`.
 struct Ext4Probe;
 
-impl FileSystemProbe for Ext4Probe {
+impl FileSystemOpen for Ext4Probe {
     fn kind(&self) -> FsKind {
         FsKind::EXT
     }
@@ -338,7 +339,7 @@ impl FileSystemProbe for Ext4Probe {
 /// source into memory (see the xfs vfs adapter docs on the `&[u8]` bridge).
 struct XfsProbe;
 
-impl FileSystemProbe for XfsProbe {
+impl FileSystemOpen for XfsProbe {
     fn kind(&self) -> FsKind {
         FsKind::XFS
     }
@@ -357,7 +358,7 @@ impl FileSystemProbe for XfsProbe {
 /// offset 32769 (LBA 16, +1), so this needs the enlarged sniff window.
 struct Iso9660Probe;
 
-impl FileSystemProbe for Iso9660Probe {
+impl FileSystemOpen for Iso9660Probe {
     fn kind(&self) -> FsKind {
         FsKind::ISO9660
     }
@@ -391,7 +392,7 @@ impl FileSystemProbe for Iso9660Probe {
 /// (immediately after the 32-byte `obj_phys` object header) in block 0.
 struct ApfsProbe;
 
-impl FileSystemProbe for ApfsProbe {
+impl FileSystemOpen for ApfsProbe {
     fn kind(&self) -> FsKind {
         FsKind::APFS
     }
@@ -423,7 +424,7 @@ impl FileSystemProbe for ApfsProbe {
 /// signature `H+` (`0x482B`) for HFS Plus or `HX` (`0x4858`) for HFSX.
 struct HfsPlusProbe;
 
-impl FileSystemProbe for HfsPlusProbe {
+impl FileSystemOpen for HfsPlusProbe {
     fn kind(&self) -> FsKind {
         FsKind::HFS_PLUS
     }
@@ -454,7 +455,7 @@ impl FileSystemProbe for HfsPlusProbe {
 /// fields the FAT probe keys on.
 struct ExFatProbe;
 
-impl FileSystemProbe for ExFatProbe {
+impl FileSystemOpen for ExFatProbe {
     fn kind(&self) -> FsKind {
         FsKind::EXFAT
     }
@@ -486,7 +487,7 @@ impl FileSystemProbe for ExFatProbe {
 /// power-of-two bytes-per-sector, and the `0x55AA` boot signature.
 struct FatProbe;
 
-impl FileSystemProbe for FatProbe {
+impl FileSystemOpen for FatProbe {
     fn kind(&self) -> FsKind {
         FsKind::FAT
     }
@@ -525,7 +526,7 @@ impl FileSystemProbe for FatProbe {
 /// of the boot sector. Extended partitions (types 0x05/0x0f) are not yet chased.
 struct MbrProbe;
 
-impl VolumeSystemProbe for MbrProbe {
+impl VolumeSystemOpen for MbrProbe {
     fn scheme(&self) -> VolumeScheme {
         VolumeScheme::Mbr
     }
@@ -618,7 +619,7 @@ impl VolumeSystem for Mbr {
 /// which ignores the 0xEE marker so GPT takes over.
 struct GptProbe;
 
-impl VolumeSystemProbe for GptProbe {
+impl VolumeSystemOpen for GptProbe {
     fn scheme(&self) -> VolumeScheme {
         VolumeScheme::Gpt
     }
@@ -729,7 +730,7 @@ impl VolumeSystem for Gpt {
 /// chain of 512-byte partition-map entries (`PM`) from block 1. All big-endian.
 struct ApmProbe;
 
-impl VolumeSystemProbe for ApmProbe {
+impl VolumeSystemOpen for ApmProbe {
     fn scheme(&self) -> VolumeScheme {
         VolumeScheme::Apm
     }
@@ -838,7 +839,7 @@ fn guid_hint(bytes: &[u8]) -> String {
 /// `conectix` footer. Decodes to its virtual disk stream via `vhd-core`.
 struct VhdDecoder;
 
-impl ContainerDecoder for VhdDecoder {
+impl ContainerOpen for VhdDecoder {
     fn format(&self) -> ContainerFormat {
         ContainerFormat::Vhd
     }
@@ -875,7 +876,7 @@ impl ContainerDecoder for VhdDecoder {
 /// virtual disk via `qcow2-core`.
 struct Qcow2Decoder;
 
-impl ContainerDecoder for Qcow2Decoder {
+impl ContainerOpen for Qcow2Decoder {
     fn format(&self) -> ContainerFormat {
         ContainerFormat::Qcow2
     }
@@ -908,7 +909,7 @@ impl ContainerDecoder for Qcow2Decoder {
 /// for the single-stream decoder).
 struct VmdkDecoder;
 
-impl ContainerDecoder for VmdkDecoder {
+impl ContainerOpen for VmdkDecoder {
     fn format(&self) -> ContainerFormat {
         ContainerFormat::Vmdk
     }
@@ -942,7 +943,7 @@ impl ContainerDecoder for VmdkDecoder {
 /// VHDX (Hyper-V v2) container: the file identifier `vhdxfile` sits at offset 0.
 struct VhdxDecoder;
 
-impl ContainerDecoder for VhdxDecoder {
+impl ContainerOpen for VhdxDecoder {
     fn format(&self) -> ContainerFormat {
         ContainerFormat::Vhdx
     }
@@ -977,7 +978,7 @@ impl ContainerDecoder for VhdxDecoder {
 /// to its virtual disk stream via `dmg-core`.
 struct DmgDecoder;
 
-impl ContainerDecoder for DmgDecoder {
+impl ContainerOpen for DmgDecoder {
     fn format(&self) -> ContainerFormat {
         ContainerFormat::Dmg
     }
@@ -1012,7 +1013,7 @@ impl ContainerDecoder for DmgDecoder {
 /// `aff4-core`) disambiguates a real AFF4 from an unrelated Zip.
 struct Aff4Decoder;
 
-impl ContainerDecoder for Aff4Decoder {
+impl ContainerOpen for Aff4Decoder {
     fn format(&self) -> ContainerFormat {
         ContainerFormat::Aff4
     }
@@ -1517,15 +1518,15 @@ mod tests {
         assert!(names.iter().any(|n| n == "plain.txt"), "walk: {names:?}");
     }
 
-    // --- golden: engine resolution == forensic_vfs::Registry::resolve ---
+    // --- golden: engine resolution == forensic_vfs_resolver::SourceOpen::open ---
 
     #[test]
-    fn engine_resolution_matches_registry_resolve_directly() {
+    fn engine_resolution_matches_openers_open_directly() {
         // Driving resolution through the engine (`open_source`) yields the SAME
-        // resolved filesystem as calling `forensic_vfs::Registry::resolve`
-        // directly on the same source. Both paths share the leaf's one
-        // implementation; this pins that invariant so a future divergence is
-        // caught by a failing test, not shipped silently.
+        // resolved filesystem as calling `Openers::open` (the resolver's
+        // `SourceOpen`) directly on the same source. Both paths share the
+        // resolver's one implementation; this pins that invariant so a future
+        // divergence is caught by a failing test, not shipped silently.
         let bytes = std::fs::read(EXT4_FIXTURE).unwrap();
         let len = bytes.len() as u64;
 
@@ -1535,12 +1536,12 @@ mod tests {
             .unwrap()
             .expect("engine resolves the ext4 fixture");
 
-        // Direct Registry::resolve path, same default registry, same base spec.
+        // Direct Openers::open path, same default openers, same base spec.
         let base = PathSpec::root(Layer::Range { start: 0, len });
-        let resolved = default_registry()
-            .resolve(mem(bytes), base, 0)
+        let resolved = default_openers()
+            .open(mem(bytes), base, 0)
             .unwrap()
-            .expect("Registry::resolve resolves the ext4 fixture");
+            .expect("Openers::open resolves the ext4 fixture");
 
         // Same mounted filesystem identity: an identical walk of every node.
         let names = |fs: &dyn FileSystem| {
@@ -1551,7 +1552,7 @@ mod tests {
         assert_eq!(
             names(via_engine.as_ref()),
             names(resolved.fs.as_ref()),
-            "engine and Registry::resolve mount the same filesystem"
+            "engine and Openers::open mount the same filesystem"
         );
         // And the registry locator's top layer names the ext filesystem.
         assert!(

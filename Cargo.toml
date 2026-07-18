@@ -31,7 +31,9 @@ exclude = [
 
 [dependencies]
 # KNOWLEDGE-tier leaves.
-forensic-vfs = "0.3"
+forensic-vfs = "0.4"
+# The generic layer resolver: the `SourceOpen` extension trait over `Openers`.
+forensic-vfs-resolver = "0.1"
 state-history-forensic = "0.1"
 
 # Batteries-included: every fleet reader is compiled in, non-optional, so the
