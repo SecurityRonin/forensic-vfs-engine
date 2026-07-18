@@ -251,6 +251,7 @@ pub fn default_openers() -> Openers {
         .container(VhdxDecoder)
         .container(DmgDecoder)
         .container(Aff4Decoder)
+        .archive(archive_core::ArchiveOpener)
 }
 
 /// Resolve the base [`DynSource`] for a path. EWF is multi-segment and opens *by

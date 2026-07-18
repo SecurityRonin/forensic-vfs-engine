@@ -1,6 +1,6 @@
 [package]
 name = "forensic-vfs-engine"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 rust-version = "1.88"
 license = "Apache-2.0"
@@ -64,6 +64,10 @@ fat       = { version = "0.1.1", package = "fat-core", features = ["vfs"] }
 btrfs-core   = { version = "0.1.2", features = ["vfs"] }
 ufs          = { version = "0.1.2", package = "ufs-core", features = ["vfs"] }
 udf-forensic = { version = "0.2.1", features = ["vfs"] }
+
+# Archive/compression layer — the `ArchiveOpen` opener that peels
+# gzip/bzip2/tar/zip/7z so archives resolve as a transparent layer.
+archive-core = { version = "0.1.1", features = ["vfs"] }
 
 [dev-dependencies]
 tempfile = "3"
