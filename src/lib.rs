@@ -1612,4 +1612,54 @@ mod tests {
             .collect();
         assert!(names.iter().any(|n| n == "plain.txt"), "walk: {names:?}");
     }
+
+    // --- golden: engine resolution == forensic_vfs::Registry::resolve ---
+
+    #[test]
+    fn engine_resolution_matches_registry_resolve_directly() {
+        // Driving resolution through the engine (`open_source`) yields the SAME
+        // resolved filesystem as calling `forensic_vfs::Registry::resolve`
+        // directly on the same source. Both paths share the leaf's one
+        // implementation; this pins that invariant so a future divergence is
+        // caught by a failing test, not shipped silently.
+        let bytes = std::fs::read(EXT4_FIXTURE).unwrap();
+        let len = bytes.len() as u64;
+
+        // Engine path.
+        let via_engine = Vfs::new()
+            .open_source(mem(bytes.clone()))
+            .unwrap()
+            .expect("engine resolves the ext4 fixture");
+
+        // Direct Registry::resolve path, same default registry, same base spec.
+        let base = PathSpec::root(Layer::Range { start: 0, len });
+        let resolved = default_registry()
+            .resolve(mem(bytes), base, 0)
+            .unwrap()
+            .expect("Registry::resolve resolves the ext4 fixture");
+
+        // Same mounted filesystem identity: an identical walk of every node.
+        let names = |fs: &dyn FileSystem| {
+            let mut v: Vec<Vec<Vec<u8>>> = walk(fs).unwrap().into_iter().map(|e| e.path).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(
+            names(via_engine.as_ref()),
+            names(resolved.fs.as_ref()),
+            "engine and Registry::resolve mount the same filesystem"
+        );
+        // And the registry locator's top layer names the ext filesystem.
+        assert!(
+            matches!(
+                resolved.spec.layer,
+                Layer::Fs {
+                    kind: FsKind::EXT,
+                    ..
+                }
+            ),
+            "registry resolved spec tops with fs:ext: {}",
+            resolved.spec.to_uri()
+        );
+    }
 }
