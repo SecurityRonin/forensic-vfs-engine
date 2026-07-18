@@ -15,10 +15,10 @@ use std::sync::Arc;
 use forensic_vfs::adapters::{FileSource, SeekPoolSource, SourceCursor, SubRange};
 use forensic_vfs::read::{le_u32, le_u64};
 use forensic_vfs::{
-    Confidence, ContainerFormat, ContainerOpen, DynFs, DynSource, FileId, FileSystem,
-    FileSystemOpen, FsKind, FsMeta, Layer, NodeAddr, NodeKind, Openers, PathSpec, SmallHex,
-    SnapshotRef, SniffWindow, VfsError, VfsResult, VolumeDesc, VolumeKind, VolumeScheme,
-    VolumeSystem, VolumeSystemOpen,
+    Confidence, ContainerFormat, ContainerOpen, DynFs, DynSource, EncryptionLayer, EncryptionOpen,
+    EncryptionScheme, FileId, FileSystem, FileSystemOpen, FsKind, FsMeta, Layer, NodeAddr,
+    NodeKind, Openers, PathSpec, SmallHex, SnapshotRef, SniffWindow, VfsError, VfsResult,
+    VolumeDesc, VolumeKind, VolumeScheme, VolumeSystem, VolumeSystemOpen,
 };
 use forensic_vfs_resolver::SourceOpen;
 use state_history_forensic::epoch::EpochTag;
@@ -1237,6 +1237,35 @@ mod tests {
             default_openers().archives().len(),
             1,
             "the archive opener is registered"
+        );
+    }
+
+    #[test]
+    fn default_openers_registers_the_four_encryption_layers() {
+        // The FDE layer registers four `EncryptionOpen` probers so the resolver
+        // can detect and (with credentials) descend BitLocker / LUKS / FileVault /
+        // VeraCrypt volumes. All four schemes are present in the registered set.
+        let openers = default_openers();
+        let layers = openers.encryption_layers();
+        assert_eq!(layers.len(), 4, "4 FDE probers registered");
+        let schemes: Vec<EncryptionScheme> = layers.iter().map(|p| p.scheme()).collect();
+        assert!(
+            schemes.contains(&EncryptionScheme::Bitlocker),
+            "bitlocker prober registered: {schemes:?}"
+        );
+        assert!(
+            schemes
+                .iter()
+                .any(|s| matches!(s, EncryptionScheme::Luks1 | EncryptionScheme::Luks2)),
+            "luks prober registered: {schemes:?}"
+        );
+        assert!(
+            schemes.contains(&EncryptionScheme::FileVault),
+            "filevault prober registered: {schemes:?}"
+        );
+        assert!(
+            schemes.contains(&EncryptionScheme::VeraCrypt),
+            "veracrypt prober registered: {schemes:?}"
         );
     }
 
