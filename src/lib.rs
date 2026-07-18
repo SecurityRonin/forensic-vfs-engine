@@ -226,8 +226,9 @@ fn map_apfs_err(e: apfs_core::ApfsError) -> VfsError {
 }
 
 /// The fleet reader openers: filesystem probers + volume-system probers +
-/// container decoders. Crypto (`EncryptionOpen`) and archive (`ArchiveOpen`)
-/// layers register here as those readers grow their `vfs` features.
+/// container decoders + the archive (`ArchiveOpen`) and encryption
+/// (`EncryptionOpen`) layers. BitLocker / LUKS / FileVault / VeraCrypt register
+/// as signature probers; the readers themselves do the decryption.
 #[must_use]
 pub fn default_openers() -> Openers {
     Openers::new()
@@ -252,6 +253,10 @@ pub fn default_openers() -> Openers {
         .container(DmgDecoder)
         .container(Aff4Decoder)
         .archive(archive_core::ArchiveOpener)
+        .encryption(BitLockerProbe)
+        .encryption(LuksProbe)
+        .encryption(FileVaultProbe)
+        .encryption(VeraCryptProbe)
 }
 
 /// Resolve the base [`DynSource`] for a path. EWF is multi-segment and opens *by
@@ -1140,6 +1145,111 @@ impl ContainerOpen for Aff4Decoder {
     }
 }
 
+/// BitLocker full-disk-encryption prober: the `-FVE-FS-` volume signature sits at
+/// byte offset 3 of the boot sector. `open` wraps the ciphertext in
+/// `bitlocker-core`'s [`bitlocker::vfs::BitlockerLayer`], which unlocks with a
+/// supplied password / numeric recovery key at resolve time.
+struct BitLockerProbe;
+
+impl EncryptionOpen for BitLockerProbe {
+    fn scheme(&self) -> EncryptionScheme {
+        EncryptionScheme::Bitlocker
+    }
+
+    fn probe(&self, w: &SniffWindow) -> Confidence {
+        if w.has_magic(3, b"-FVE-FS-") {
+            Confidence::Yes {
+                how: "BitLocker -FVE-FS- signature",
+            }
+        } else {
+            Confidence::No
+        }
+    }
+
+    fn open(&self, src: DynSource) -> VfsResult<Box<dyn EncryptionLayer>> {
+        Ok(Box::new(bitlocker::vfs::BitlockerLayer::new(src)))
+    }
+}
+
+/// LUKS1/LUKS2 full-disk-encryption prober: both versions begin with the
+/// `LUKS\xba\xbe` magic at byte offset 0 (the on-disk version field then
+/// distinguishes them). `luks-core`'s [`luks::vfs::LuksLayer`] self-detects the
+/// concrete version in its constructor, so this prober needs only the shared
+/// magic; the declared scheme is the representative `Luks2`.
+struct LuksProbe;
+
+impl EncryptionOpen for LuksProbe {
+    fn scheme(&self) -> EncryptionScheme {
+        // Both LUKS1 and LUKS2 share the offset-0 magic; the concrete version is
+        // resolved by LuksLayer at open. Declare LUKS2 as the representative.
+        EncryptionScheme::Luks2
+    }
+
+    fn probe(&self, w: &SniffWindow) -> Confidence {
+        // LUKS_MAGIC = "LUKS" + 0xBABE (LUKS1 and LUKS2 both carry it at offset 0).
+        if w.has_magic(0, &[0x4c, 0x55, 0x4b, 0x53, 0xba, 0xbe]) {
+            Confidence::Yes { how: "LUKS magic" }
+        } else {
+            Confidence::No
+        }
+    }
+
+    fn open(&self, src: DynSource) -> VfsResult<Box<dyn EncryptionLayer>> {
+        Ok(Box::new(luks::vfs::LuksLayer::new(src)))
+    }
+}
+
+/// FileVault / CoreStorage full-disk-encryption prober: the CoreStorage volume
+/// header carries the `CS` signature (bytes `0x43 0x53`) at byte offset 88. `open`
+/// wraps the ciphertext in `filevault-core`'s [`filevault::vfs::FileVaultLayer`],
+/// which unlocks with a supplied volume password.
+struct FileVaultProbe;
+
+impl EncryptionOpen for FileVaultProbe {
+    fn scheme(&self) -> EncryptionScheme {
+        EncryptionScheme::FileVault
+    }
+
+    fn probe(&self, w: &SniffWindow) -> Confidence {
+        // CoreStorage volume header signature "CS" at offset 88 (filevault-core
+        // reads it little-endian as 0x5343).
+        if w.has_magic(88, b"CS") {
+            Confidence::Yes {
+                how: "CoreStorage CS volume header",
+            }
+        } else {
+            Confidence::No
+        }
+    }
+
+    fn open(&self, src: DynSource) -> VfsResult<Box<dyn EncryptionLayer>> {
+        Ok(Box::new(filevault::vfs::FileVaultLayer::new(src)))
+    }
+}
+
+/// VeraCrypt / TrueCrypt full-disk-encryption prober: the volume is signature-less
+/// by design (the header itself is encrypted), so this always reports
+/// [`Confidence::Maybe`] — the resolver's credential-attempt pass then
+/// decrypts-or-falls-through (ADR 0010). `open` wraps the ciphertext in
+/// `veracrypt-core`'s [`veracrypt::vfs::VeraCryptLayer`].
+struct VeraCryptProbe;
+
+impl EncryptionOpen for VeraCryptProbe {
+    fn scheme(&self) -> EncryptionScheme {
+        EncryptionScheme::VeraCrypt
+    }
+
+    fn probe(&self, _w: &SniffWindow) -> Confidence {
+        // No plaintext signature exists; only a credential attempt can confirm a
+        // VeraCrypt volume, so never claim more than Maybe.
+        Confidence::Maybe
+    }
+
+    fn open(&self, src: DynSource) -> VfsResult<Box<dyn EncryptionLayer>> {
+        Ok(Box::new(veracrypt::vfs::VeraCryptLayer::new(src)))
+    }
+}
+
 /// Cap on directory recursion depth in [`walk`] — a filesystem-loop guard.
 const WALK_MAX_DEPTH: usize = 256;
 
@@ -1267,6 +1377,45 @@ mod tests {
             schemes.contains(&EncryptionScheme::VeraCrypt),
             "veracrypt prober registered: {schemes:?}"
         );
+    }
+
+    #[test]
+    fn encryption_probes_detect_their_signatures() {
+        // BitLocker: -FVE-FS- at byte offset 3 -> Yes; random bytes -> No.
+        let mut bde = vec![0u8; 64];
+        bde[3..11].copy_from_slice(b"-FVE-FS-");
+        assert!(matches!(
+            BitLockerProbe.probe(&window(&bde)),
+            Confidence::Yes { .. }
+        ));
+        assert_eq!(BitLockerProbe.probe(&window(&[0u8; 64])), Confidence::No);
+        assert_eq!(BitLockerProbe.scheme(), EncryptionScheme::Bitlocker);
+
+        // LUKS: "LUKS" + 0xBABE at offset 0 -> Yes; random bytes -> No.
+        let mut luks = vec![0u8; 64];
+        luks[0..6].copy_from_slice(&[0x4c, 0x55, 0x4b, 0x53, 0xba, 0xbe]);
+        assert!(matches!(
+            LuksProbe.probe(&window(&luks)),
+            Confidence::Yes { .. }
+        ));
+        assert_eq!(LuksProbe.probe(&window(&[0u8; 64])), Confidence::No);
+
+        // FileVault / CoreStorage: "CS" at offset 88 -> Yes; random bytes -> No.
+        let mut fv = vec![0u8; 128];
+        fv[88..90].copy_from_slice(b"CS");
+        assert!(matches!(
+            FileVaultProbe.probe(&window(&fv)),
+            Confidence::Yes { .. }
+        ));
+        assert_eq!(FileVaultProbe.probe(&window(&[0u8; 128])), Confidence::No);
+
+        // VeraCrypt is signature-less by design -> always Maybe (never Yes/No).
+        assert_eq!(VeraCryptProbe.probe(&window(&[])), Confidence::Maybe);
+        assert_eq!(
+            VeraCryptProbe.probe(&window(&[0xffu8; 512])),
+            Confidence::Maybe
+        );
+        assert_eq!(VeraCryptProbe.scheme(), EncryptionScheme::VeraCrypt);
     }
 
     #[test]
