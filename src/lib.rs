@@ -1228,6 +1228,18 @@ mod tests {
     }
 
     #[test]
+    fn default_openers_registers_the_archive_opener() {
+        // The archive layer registers as a first-class `ArchiveOpen` opener so
+        // the resolver descends into gzip/bzip2/tar/zip/7z archives. Exactly one
+        // opener — archive-core's single delegating `ArchiveOpener`.
+        assert_eq!(
+            default_openers().archives().len(),
+            1,
+            "the archive opener is registered"
+        );
+    }
+
+    #[test]
     fn default_is_new_and_probers_report_their_kinds() {
         let _ = Vfs::default().open_source(mem(vec![0u8; 64])).unwrap();
         assert_eq!(NtfsProbe.kind(), FsKind::NTFS);
