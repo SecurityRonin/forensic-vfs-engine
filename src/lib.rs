@@ -21,19 +21,6 @@ use forensic_vfs::{
 };
 use state_history_forensic::epoch::EpochTag;
 
-/// Depth cap on the recursive resolve (container/volume nesting) — a bomb guard.
-const MAX_DEPTH: usize = 8;
-
-/// Bytes read into the sniff window. Sized so a prober can see multi-offset
-/// magics — notably the ISO 9660 Primary Volume Descriptor (`CD001` at byte
-/// offset 32769, LBA 16). NTFS/ext4/MBR/GPT/container magics all sit in the
-/// first few KiB, so the larger window is a strict superset. One bounded read.
-const SNIFF_CAP: u64 = 40 * 1024;
-
-/// Bytes read into the *tail* sniff window from the end of the source. Sized to
-/// cover trailer signatures like the DMG `koly` footer (at `total_len - 512`).
-const TAIL_CAP: u64 = 4096;
-
 /// One resolved piece of evidence: its locator plus the mounted filesystem, when
 /// the engine detected one (`None` for a source no registered prober recognized).
 pub struct Evidence {
@@ -70,7 +57,7 @@ impl Vfs {
     pub fn open(&self, path: &Path) -> VfsResult<Evidence> {
         let base = open_base(path)?;
         let base_spec = PathSpec::os(path);
-        match self.resolve(base, base_spec.clone(), 0)? {
+        match self.registry.resolve(base, base_spec.clone(), 0)? {
             Some(r) => Ok(Evidence {
                 root: r.spec,
                 fs: Some(r.fs),
@@ -89,81 +76,7 @@ impl Vfs {
             start: 0,
             len: source.len(),
         });
-        Ok(self.resolve(source, base, 0)?.map(|r| r.fs))
-    }
-
-    /// Recursively resolve a source to a filesystem: sniff its head; if a
-    /// filesystem prober recognizes it, mount it; otherwise if a volume-system
-    /// prober recognizes it, descend into each volume and resolve that.
-    fn resolve(
-        &self,
-        source: DynSource,
-        spec: PathSpec,
-        depth: usize,
-    ) -> VfsResult<Option<Resolved>> {
-        if depth > MAX_DEPTH {
-            return Ok(None);
-        }
-        let total = source.len();
-        let cap = total.clamp(1, SNIFF_CAP) as usize;
-        let mut head = vec![0u8; cap];
-        let n = source.read_at(0, &mut head)?;
-        // A tail window (the last bytes of the source) so a prober can match a
-        // trailer signature the head never reaches — e.g. the DMG koly footer.
-        let tail_cap = total.min(TAIL_CAP);
-        let tail_start = total - tail_cap;
-        let mut tail = vec![0u8; tail_cap as usize];
-        let tn = source.read_at(tail_start, &mut tail)?;
-        let window = SniffWindow::with_tail(
-            0,
-            head.get(..n).unwrap_or(&[]),
-            total,
-            tail.get(..tn).unwrap_or(&[]),
-        );
-
-        for probe in self.registry.filesystems() {
-            if probe.probe(&window).is_candidate() {
-                let fs = probe.open(source.clone())?;
-                let fs_spec = spec.clone().push(Layer::Fs {
-                    kind: probe.kind(),
-                    at: NodeAddr::Path(Vec::new()),
-                });
-                return Ok(Some(Resolved {
-                    fs,
-                    spec: fs_spec,
-                    source,
-                    source_spec: spec,
-                }));
-            }
-        }
-        for vsp in self.registry.volume_systems() {
-            if vsp.probe(&window).is_candidate() {
-                let vs = vsp.open(source.clone())?;
-                for index in 0..vs.volumes().len() {
-                    let sub = vs.open_volume(index)?;
-                    let child = spec.clone().push(Layer::Volume {
-                        scheme: vsp.scheme(),
-                        index,
-                        guid: None,
-                    });
-                    if let Some(found) = self.resolve(sub, child, depth + 1)? {
-                        return Ok(Some(found));
-                    }
-                }
-            }
-        }
-        for cd in self.registry.containers() {
-            if cd.probe(&window).is_candidate() {
-                let decoded = cd.open(source.clone())?;
-                let child = spec.clone().push(Layer::Container {
-                    format: cd.format(),
-                });
-                if let Some(found) = self.resolve(decoded, child, depth + 1)? {
-                    return Ok(Some(found));
-                }
-            }
-        }
-        Ok(None)
+        Ok(self.registry.resolve(source, base, 0)?.map(|r| r.fs))
     }
 
     /// Enumerate an APFS volume's snapshots as a time-indexed `[H]` cohort. The
@@ -183,7 +96,7 @@ impl Vfs {
     pub fn snapshots(&self, path: &Path) -> VfsResult<Vec<SnapshotView>> {
         let base = open_base(path)?;
         let base_spec = PathSpec::os(path);
-        let Some(resolved) = self.resolve(base, base_spec, 0)? else {
+        let Some(resolved) = self.registry.resolve(base, base_spec, 0)? else {
             return Ok(Vec::new());
         };
         if !is_apfs(&resolved.spec) {
@@ -215,6 +128,7 @@ impl Vfs {
         let base = open_base(path)?;
         let base_spec = PathSpec::os(path);
         let resolved = self
+            .registry
             .resolve(base, base_spec, 0)?
             .ok_or(VfsError::Bootstrap {
                 stage: "apfs snapshot",
@@ -243,16 +157,6 @@ impl Vfs {
             fs: Some(Arc::new(fs)),
         })
     }
-}
-
-/// One resolved layer stack: the mounted filesystem, its locator, and the byte
-/// source it was mounted from (plus that source's pre-filesystem locator, the
-/// base a snapshot layer is pushed onto).
-struct Resolved {
-    fs: DynFs,
-    spec: PathSpec,
-    source: DynSource,
-    source_spec: PathSpec,
 }
 
 /// One snapshot of an APFS volume, viewed as a time-indexed state in the `[H]`
