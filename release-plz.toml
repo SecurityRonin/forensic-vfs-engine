@@ -1,0 +1,42 @@
+# release-plz owns crates.io publishing + changelog + version bumps for this repo's
+# single published LIBRARY crate `forensic-vfs-engine`. It runs on pushes to main
+# (see .github/workflows/release-plz.yml):
+#   - `release-pr`  opens a human-reviewed version-bump PR (conventional commits)
+#   - `release`     publishes the crate when its Cargo.toml version is ahead of
+#                   crates.io, and creates its git tag
+#
+# The crate is a published library, so it is not release=false.
+
+[workspace]
+# Per-package git tag, e.g. `forensic-vfs-engine-v0.1.2`. A `<name>-v…` tag has a
+# letter, not a digit, after the first `v`, so it never matches a `v[0-9]*`
+# binary-release glob.
+git_tag_enable = true
+# The library crate gets a git tag + CHANGELOG entry, not a GitHub Release with assets.
+git_release_enable = false
+changelog_update = true
+dependencies_update = false
+# Only prepare a release when a real change exists since the last one. release-plz's
+# release detection is file-based, so a changelog-only "chore: release" commit
+# otherwise re-triggers a release (the churn loop). This allowlist makes
+# feat/fix/perf/refactor/doc/revert the only release triggers; chore/ci/test/style/
+# build (incl. release-plz's own release commits) never prepare a release.
+release_commits = "^(feat|fix|perf|refactor|doc|revert)"
+
+[changelog]
+commit_parsers = [
+    { message = "^chore\\(release\\):", skip = true },
+    { message = "^chore: release", skip = true },
+    { message = "^feat", group = "added" },
+    { message = "^fix", group = "fixed" },
+    { message = "^perf", group = "performance" },
+    { message = "^refactor", group = "other" },
+    { message = "^doc", group = "documentation" },
+    { message = "^revert", group = "other" },
+    { message = "^style", skip = true },
+    { message = "^test", skip = true },
+    { message = "^ci", skip = true },
+    { message = "^build", skip = true },
+    { message = "^chore", skip = true },
+    { message = "^.*", group = "other" },
+]
