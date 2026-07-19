@@ -71,6 +71,77 @@ impl Vfs {
         }
     }
 
+    /// Open evidence at `path` and surface **every** partition, not just the
+    /// first filesystem [`Vfs::open`] finds. The first top-level volume system
+    /// that claims the base source is forked into one [`Evidence`] per volume
+    /// that resolves to a filesystem — so a Windows GPT disk yields both its FAT
+    /// EFI System Partition *and* its NTFS Windows volume, instead of stopping at
+    /// slot 0. The per-volume container/encryption/filesystem descent is
+    /// delegated to the resolver (`self.openers.open(..)` at depth 1), exactly as
+    /// [`Vfs::open`] descends a single volume.
+    ///
+    /// A volume that resolves to no filesystem (an MSR reservation, empty space)
+    /// is dropped, so the caller only sees mountable partitions. When no volume
+    /// system claims the base — a bare volume, a container wrapping one
+    /// filesystem, an encrypted volume — this returns a single-element `Vec`
+    /// identical to [`Vfs::open`], preserving the one-filesystem behavior.
+    ///
+    /// # Errors
+    /// Propagates the bootstrap error of resolving the base source, a source read
+    /// error while sniffing, or a prober `open`/decode failure raised after a
+    /// positive probe verdict.
+    pub fn open_all(&self, path: &Path) -> VfsResult<Vec<Evidence>> {
+        // Head/tail sniff caps, mirroring the resolver's SNIFF_CAP/TAIL_CAP so a
+        // top-level volume-system prober sees its multi-offset magic (GPT
+        // `EFI PART` @512, APM `PM` @512, MBR `0x55AA` @510) and a trailer.
+        const HEAD_CAP: u64 = 128 * 1024;
+        const TAIL_CAP: u64 = 4096;
+
+        let base = open_base(path)?;
+        let base_spec = PathSpec::os(path);
+
+        let total = base.len();
+        let head_len = total.clamp(1, HEAD_CAP) as usize;
+        let mut head = vec![0u8; head_len];
+        let hn = base.read_at(0, &mut head)?;
+        let tail_len = total.min(TAIL_CAP);
+        let mut tail = vec![0u8; tail_len as usize];
+        let tn = base.read_at(total - tail_len, &mut tail)?;
+        let window = SniffWindow::with_tail(
+            0,
+            head.get(..hn).unwrap_or(&[]),
+            total,
+            tail.get(..tn).unwrap_or(&[]),
+        );
+
+        for vsp in self.openers.volume_systems() {
+            if !vsp.probe(&window).is_candidate() {
+                continue;
+            }
+            let vs = vsp.open(base.clone())?;
+            let mut out = Vec::new();
+            for index in 0..vs.volumes().len() {
+                let sub = vs.open_volume(index)?;
+                let child = base_spec.clone().push(Layer::Volume {
+                    scheme: vsp.scheme(),
+                    index,
+                    guid: None,
+                });
+                if let Some(r) = self.openers.open(sub, child, 1)? {
+                    out.push(Evidence {
+                        root: r.spec,
+                        fs: Some(r.fs),
+                    });
+                }
+            }
+            return Ok(out);
+        }
+
+        // No volume system claims the base — fall back to the single-filesystem
+        // resolve (bare volume / container / encryption), preserving `open`.
+        Ok(vec![self.open(path)?])
+    }
+
     /// Resolve a filesystem directly from a byte source — an in-memory buffer, a
     /// nested image, or a carved region. `Ok(None)` when nothing recognizes it.
     pub fn open_source(&self, source: DynSource) -> VfsResult<Option<DynFs>> {
