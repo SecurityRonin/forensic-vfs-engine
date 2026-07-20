@@ -18,6 +18,11 @@ allow = [
     # capability with default-features=false.
     "BSL-1.0",
     "CC0-1.0",
+    # Batteries-included: archive-core's 7z/bzip2 decode path pulls libbz2-rs-sys
+    # (pure-Rust bzip2, "bzip2-1.0.6") and ppmd-rust ("CC0-1.0 OR MIT-0"). Both
+    # permissive — allow rather than amputate the archive-peel capability.
+    "bzip2-1.0.6",
+    "MIT-0",
 ]
 
 [bans]
