@@ -707,16 +707,34 @@ impl VolumeSystemOpen for MbrProbe {
     }
 
     fn probe(&self, w: &SniffWindow) -> Confidence {
-        // 0x55AA boot signature plus at least one plausible partition entry.
+        // 0x55AA at offset 510 is necessary but NOT sufficient: exFAT, NTFS and
+        // FAT boot sectors carry the identical signature. Require the sector to
+        // (a) not be a filesystem boot sector and (b) hold a structurally valid
+        // partition entry before declaring an MBR volume system, so a bare
+        // exFAT/FAT/NTFS volume falls through to a single-filesystem open.
         if w.at(510, 2) != Some(&[0x55, 0xaa]) {
+            return Confidence::No;
+        }
+        // A filesystem boot sector is never a partition table: exFAT and NTFS
+        // place an ASCII identifier at offset 3, and FAT/exFAT open with a jump
+        // instruction at offset 0. Any of these means the 446..510 bytes are
+        // boot code that only coincidentally resembles partition entries.
+        if w.has_magic(3, b"EXFAT   ") || w.has_magic(3, b"NTFS    ") {
+            return Confidence::No;
+        }
+        let jump = w.at(0, 1).and_then(|s| s.first().copied());
+        if matches!(jump, Some(0xEB | 0xE9)) {
             return Confidence::No;
         }
         let data = w.bytes();
         for i in 0..4usize {
             let base = 446 + i * 16;
+            // A real entry's boot flag is inactive (0x00) or active (0x80); any
+            // other value marks the region as boot code, not a partition entry.
+            let boot_flag = data.get(base).copied().unwrap_or(0xFF);
             let ptype = data.get(base + 4).copied().unwrap_or(0);
             let size = le_u32(data, base + 12);
-            if ptype != 0 && ptype != 0xEE && size != 0 {
+            if matches!(boot_flag, 0x00 | 0x80) && ptype != 0 && ptype != 0xEE && size != 0 {
                 return Confidence::Yes {
                     how: "MBR partition table",
                 };
