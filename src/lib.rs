@@ -16,9 +16,9 @@ use forensic_vfs::adapters::{FileSource, SeekPoolSource, SourceCursor, SubRange}
 use forensic_vfs::read::{le_u32, le_u64};
 use forensic_vfs::{
     Confidence, ContainerFormat, ContainerOpen, DynFs, DynSource, EncryptionLayer, EncryptionOpen,
-    EncryptionScheme, FileId, FileSystem, FileSystemOpen, FsKind, FsMeta, Layer, NodeAddr,
-    NodeKind, Openers, PathSpec, SmallHex, SnapshotRef, SniffWindow, VfsError, VfsResult,
-    VolumeDesc, VolumeKind, VolumeScheme, VolumeSystem, VolumeSystemOpen,
+    EncryptionScheme, FileId, FileSystem, FileSystemOpen, FsKind, FsMeta, Layer, Locator, NodeAddr,
+    NodeKind, Openers, SmallHex, SnapshotRef, SniffWindow, VfsError, VfsResult, VolumeDesc,
+    VolumeKind, VolumeScheme, VolumeSystem, VolumeSystemOpen,
 };
 use forensic_vfs_resolver::SourceOpen;
 use state_history_forensic::epoch::EpochTag;
@@ -27,7 +27,7 @@ use state_history_forensic::epoch::EpochTag;
 /// the engine detected one (`None` for a source no registered prober recognized).
 pub struct Evidence {
     /// The locator this evidence was opened from.
-    pub root: PathSpec,
+    pub root: Locator,
     /// The mounted read-only filesystem, if detected.
     pub fs: Option<DynFs>,
 }
@@ -58,7 +58,7 @@ impl Vfs {
     /// `Evidence` with `fs: None` — a genuinely clean unknown, not an error.
     pub fn open(&self, path: &Path) -> VfsResult<Evidence> {
         let base = open_base(path)?;
-        let base_spec = PathSpec::os(path);
+        let base_spec = Locator::file(path);
         match self.openers.open(base, base_spec.clone(), 0)? {
             Some(r) => Ok(Evidence {
                 root: r.spec,
@@ -98,7 +98,7 @@ impl Vfs {
         const TAIL_CAP: u64 = 4096;
 
         let base = open_base(path)?;
-        let base_spec = PathSpec::os(path);
+        let base_spec = Locator::file(path);
 
         let total = base.len();
         let head_len = total.clamp(1, HEAD_CAP) as usize;
@@ -145,7 +145,7 @@ impl Vfs {
     /// Resolve a filesystem directly from a byte source — an in-memory buffer, a
     /// nested image, or a carved region. `Ok(None)` when nothing recognizes it.
     pub fn open_source(&self, source: DynSource) -> VfsResult<Option<DynFs>> {
-        let base = PathSpec::root(Layer::Range {
+        let base = Locator::root(Layer::Range {
             start: 0,
             len: source.len(),
         });
@@ -161,14 +161,14 @@ impl Vfs {
     /// The returned cohort is a `Vec<SnapshotView>` (the list form of the richer
     /// `state_history_forensic::TemporalCohort<H>`, adopted here once the generic
     /// `HistoricalSource` wiring lands); each view carries an [`EpochTag`] derived
-    /// from the snapshot's `create_time` and a re-openable [`PathSpec`] locator.
+    /// from the snapshot's `create_time` and a re-openable [`Locator`] locator.
     ///
     /// # Errors
     /// The bootstrap/decoding errors of resolving the path, or an apfs-core decode
     /// failure while walking the snapshot-metadata tree.
     pub fn snapshots(&self, path: &Path) -> VfsResult<Vec<SnapshotView>> {
         let base = open_base(path)?;
-        let base_spec = PathSpec::os(path);
+        let base_spec = Locator::file(path);
         let Some(resolved) = self.openers.open(base, base_spec, 0)? else {
             return Ok(Vec::new());
         };
@@ -199,7 +199,7 @@ impl Vfs {
     /// `xid`).
     pub fn open_snapshot(&self, path: &Path, xid: u64) -> VfsResult<Evidence> {
         let base = open_base(path)?;
-        let base_spec = PathSpec::os(path);
+        let base_spec = Locator::file(path);
         let resolved = self
             .openers
             .open(base, base_spec, 0)?
@@ -234,7 +234,7 @@ impl Vfs {
 
 /// One snapshot of an APFS volume, viewed as a time-indexed state in the `[H]`
 /// cohort: the wall-clock [`EpochTag`], the APFS transaction id, the snapshot
-/// name, and a re-openable [`PathSpec`] locator (base ⇒ `Snapshot{ApfsXid}`).
+/// name, and a re-openable [`Locator`] locator (base ⇒ `Snapshot{ApfsXid}`).
 #[derive(Debug, Clone)]
 pub struct SnapshotView {
     /// Time-indexed identity, derived from the snapshot's `create_time`.
@@ -244,11 +244,11 @@ pub struct SnapshotView {
     /// The snapshot name.
     pub name: String,
     /// A locator that [`Vfs::open_snapshot`] re-opens end-to-end.
-    pub locator: PathSpec,
+    pub locator: Locator,
 }
 
 /// True when a resolved locator's top layer is an APFS filesystem.
-fn is_apfs(spec: &PathSpec) -> bool {
+fn is_apfs(spec: &Locator) -> bool {
     matches!(
         spec.layer,
         Layer::Fs {
@@ -262,7 +262,7 @@ fn is_apfs(spec: &PathSpec) -> bool {
 /// pre-filesystem locator) from a snapshot's transaction id, name, and
 /// `create_time`. Takes primitives rather than the `#[non_exhaustive]`
 /// `apfs_core::snapshot::Snapshot` so the mapping is unit-testable directly.
-fn snapshot_view(source_spec: &PathSpec, xid: u64, name: String, create_time: u64) -> SnapshotView {
+fn snapshot_view(source_spec: &Locator, xid: u64, name: String, create_time: u64) -> SnapshotView {
     SnapshotView {
         epoch: epoch_from_create_time(create_time),
         xid,
@@ -1814,7 +1814,7 @@ mod tests {
 
     #[test]
     fn snapshot_view_carries_epoch_and_snapshot_locator() {
-        let base = PathSpec::os("/ev.dmg");
+        let base = Locator::file("/ev.dmg");
         let v = snapshot_view(&base, 42, "daily".to_string(), 1000);
         assert_eq!(v.xid, 42);
         assert_eq!(v.name, "daily");
@@ -1912,7 +1912,7 @@ mod tests {
             .expect("engine resolves the ext4 fixture");
 
         // Direct Openers::open path, same default openers, same base spec.
-        let base = PathSpec::root(Layer::Range { start: 0, len });
+        let base = Locator::root(Layer::Range { start: 0, len });
         let resolved = default_openers()
             .open(mem(bytes), base, 0)
             .unwrap()

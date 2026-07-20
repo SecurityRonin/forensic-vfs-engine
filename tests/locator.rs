@@ -1,4 +1,4 @@
-//! `Evidence.root` records the detected layer stack as a `PathSpec` locator — so
+//! `Evidence.root` records the detected layer stack as a `Locator` — so
 //! a finding can cite, and a session re-open, the exact resolved stack (not just
 //! the base path). Verified via the lossless canonical URI.
 
