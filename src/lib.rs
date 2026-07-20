@@ -2012,6 +2012,7 @@ mod tests {
             "engine and Openers::open mount the same filesystem"
         );
         // And the registry locator's top layer names the ext filesystem.
+        let resolved_uri = resolved.spec.to_uri();
         assert!(
             matches!(
                 resolved.spec.layer,
@@ -2020,8 +2021,7 @@ mod tests {
                     ..
                 }
             ),
-            "registry resolved spec tops with fs:ext: {}",
-            resolved.spec.to_uri()
+            "registry resolved spec tops with fs:ext: {resolved_uri}"
         );
     }
 }

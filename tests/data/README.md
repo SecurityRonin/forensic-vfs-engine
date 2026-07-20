@@ -76,3 +76,47 @@ Oracle (two tiers): (1) `aff4-core`'s own reader reconstructs the virtual disk
 **byte-identically** to `ext4.img` (`virtual_disk_size` = 4,194,304); (2) The
 Sleuth Kit on that ext4 image — `hello.txt` = **inode 13**, 12 bytes,
 "Hello, ext4!" (see the ext4 entry above). Used by `open_aff4.rs`.
+
+## UDF
+
+`udf.img` (MD5 `31d06a9942f8bc4983617631a9ac4e30`, 8 MiB) is a byte-for-byte copy
+of `udf-forensic`'s `udf_plain.img`, a bare **UDF 1.50** volume authored by
+`mkudffs` (udftools 2.3) for CD-R media (provenance in
+[`udf-forensic/tests/data/README.md`](https://github.com/SecurityRonin/udf-forensic);
+`mkudffs` output is freely redistributable — tool-authored structure, zero user
+data). The Volume Recognition Sequence (`BEA01`/`NSR03`/`TEA01` at bytes
+32768/34816/36864) sits inside the resolver's head window. Oracle: `udfinfo`
+(source repo). Used by `open_udf.rs` to prove the engine detects and mounts a
+bare UDF volume via `UdfProbe` → `udf_forensic::vfs::UdfVfs`.
+
+## UFS2
+
+`ufs.img` (MD5 `734455ec5b2f37db3a075a80f249a225`, 4,186,112 bytes) is the UFS2
+filesystem **partition** extracted from `ufs-forensic`'s `ufs2.raw`
+BSD-disklabel image at its partition base (byte 8192 = sector 16), re-based to
+offset 0 so the UFS2 `fs_magic` (`0x19540119`) lands at absolute offset **66908**
+inside the resolver's head window (the engine registers no BSD-disklabel volume
+system, so the bare partition is what auto-detects). Extraction command:
+
+```
+dd if=ufs-forensic/tests/data/ufs2.raw of=ufs.img bs=512 skip=16
+```
+
+Source provenance (`newfs`-minted, Tier-1) in
+[`ufs-forensic/tests/data/README.md`](https://github.com/SecurityRonin/ufs-forensic).
+Oracle: The Sleuth Kit (`fls -o 16 -f ufs2 -r`) — root inode 2 holds
+`passwords.txt`, `a_directory`, `a_link`, `.snap`. Used by `open_ufs.rs` to prove
+the engine detects and mounts a bare UFS2 volume via `UfsProbe`, and that
+`open_all` falls back to the single filesystem for a bare volume.
+
+## btrfs
+
+No committed binary. `open_btrfs.rs` **assembles a walkable btrfs image
+in-memory** (pure-Rust byte layout, no `mkfs`): an identity `sys_chunk_array`, a
+ROOT_TREE leaf holding the FS_TREE ROOT_ITEM, and an FS_TREE leaf with a root
+directory and an inline-extent file `note.txt`. The `_BHRfS_M` superblock magic
+sits at byte 0x10040 (65600), inside the resolver's 128 KiB head window. The
+builder is ported from `btrfs-forensic`'s own `core/src/vfs.rs` crafted-image
+test (`walkable_image`) — the layout that repo verifies `BtrfsFs::open` accepts.
+Since the engine only calls `BtrfsFs::open`, the same crafted image drives its
+`BtrfsProbe` dispatch arm. Oracle: the `btrfs-forensic` crafted-image tests.
