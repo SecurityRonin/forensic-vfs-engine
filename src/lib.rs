@@ -1513,6 +1513,70 @@ mod tests {
     }
 
     #[test]
+    fn mbr_probe_rejects_filesystem_boot_sectors() {
+        // A bare exFAT volume's boot sector carries 0x55AA at offset 510 exactly
+        // like an MBR, and its boot code fills the 446..510 bytes an MBR uses for
+        // its partition table — so a naive "0x55AA + one plausible entry"
+        // heuristic false-fires and open_all tries to enumerate partitions that
+        // do not exist, dropping the filesystem. A real MBR never carries a
+        // filesystem identifier ("EXFAT   " / "NTFS    ") at offset 3, nor a FAT
+        // jump instruction at offset 0.
+        let mut exfat = vec![0u8; 512];
+        exfat[3..11].copy_from_slice(b"EXFAT   ");
+        exfat[510] = 0x55;
+        exfat[511] = 0xaa;
+        // Boot-code bytes that happen to look like a valid partition entry.
+        exfat[446 + 4] = 0x07; // "type"
+        exfat[446 + 12] = 0x20; // "size"
+        assert_eq!(
+            MbrProbe.probe(&window(&exfat)),
+            Confidence::No,
+            "exFAT boot sector must not be misread as an MBR partition table"
+        );
+
+        // NTFS boot sectors share the same 0x55AA trap.
+        let mut ntfs = vec![0u8; 512];
+        ntfs[3..11].copy_from_slice(b"NTFS    ");
+        ntfs[510] = 0x55;
+        ntfs[511] = 0xaa;
+        ntfs[446 + 4] = 0x07;
+        ntfs[446 + 12] = 0x20;
+        assert_eq!(
+            MbrProbe.probe(&window(&ntfs)),
+            Confidence::No,
+            "NTFS boot sector must not be misread as an MBR partition table"
+        );
+
+        // A FAT32 boot sector: jump instruction at offset 0 + 0x55AA, no MBR.
+        let mut fat = vec![0u8; 512];
+        fat[0] = 0xEB; // jump
+        fat[510] = 0x55;
+        fat[511] = 0xaa;
+        fat[446 + 4] = 0x07;
+        fat[446 + 12] = 0x20;
+        assert_eq!(
+            MbrProbe.probe(&window(&fat)),
+            Confidence::No,
+            "FAT boot sector must not be misread as an MBR partition table"
+        );
+
+        // A genuine MBR (no FS identifier at offset 3, bootable entry) still
+        // probes Yes — the strengthened check must not reject real partition
+        // tables.
+        let mut mbr = vec![0u8; 512];
+        mbr[446] = 0x80; // active/bootable flag
+        mbr[446 + 4] = 0x07; // NTFS partition type
+        mbr[446 + 8] = 1; // start LBA
+        mbr[446 + 12] = 4; // size in sectors
+        mbr[510] = 0x55;
+        mbr[511] = 0xaa;
+        assert!(
+            matches!(MbrProbe.probe(&window(&mbr)), Confidence::Yes { .. }),
+            "a genuine MBR partition table must still be detected"
+        );
+    }
+
+    #[test]
     fn ntfs_magic_but_invalid_boot_is_a_loud_error() {
         // "NTFS    " at offset 3 makes NtfsProbe say Yes; the garbage then fails
         // NtfsFs::open -> Decode error propagates (never a silent None).
