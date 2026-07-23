@@ -11,6 +11,7 @@
 # Per-package git tag, e.g. `forensic-vfs-engine-v0.1.2`. A `<name>-v…` tag has a
 # letter, not a digit, after the first `v`, so it never matches a `v[0-9]*`
 # binary-release glob.
+git_tag_name = "{{ package }}-v{{ version }}"
 git_tag_enable = true
 # The library crate gets a git tag + CHANGELOG entry, not a GitHub Release with assets.
 git_release_enable = false
