@@ -17,5 +17,5 @@ doc  = false
 
 [dependencies]
 libfuzzer-sys       = "0.4"
-forensic-vfs        = "0.3"
+forensic-vfs        = "0.7"
 forensic-vfs-engine = { path = ".." }
