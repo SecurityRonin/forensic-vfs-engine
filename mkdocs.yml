@@ -28,3 +28,7 @@ markdown_extensions:
 
 plugins:
   - search
+
+exclude_docs: |
+  PRD.md
+  decisions/
