@@ -78,6 +78,11 @@ veracrypt = { version = "0.2.2", package = "veracrypt-core", features = ["vfs"] 
 
 [dev-dependencies]
 tempfile = "3"
+# Independent oracle for the archive/logical fallback tests: build a fixture
+# archive with a *different* implementation than the one under test (archive-core),
+# per Doer-Checker. Pure-Rust, low-MSRV; already in the dependency graph via
+# archive-core's tar backend.
+tar = "0.4"
 
 [lints.rust]
 unsafe_code = "forbid"
