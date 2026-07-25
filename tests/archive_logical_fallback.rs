@@ -11,7 +11,7 @@
 
 use std::io::Write;
 
-use forensic_vfs::{FileSystem, NodeKind, StreamId};
+use forensic_vfs::{NodeKind, StreamId};
 use forensic_vfs_engine::{walk, Vfs};
 
 /// Build an uncompressed `ustar` archive: a top-level file plus a nested

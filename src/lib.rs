@@ -23,6 +23,8 @@ use forensic_vfs::{
 use forensic_vfs_resolver::SourceOpen;
 use state_history_forensic::epoch::EpochTag;
 
+mod containerfs;
+
 /// One resolved piece of evidence: its locator plus the mounted filesystem, when
 /// the engine detected one (`None` for a source no registered prober recognized).
 pub struct Evidence {
@@ -59,16 +61,30 @@ impl Vfs {
     pub fn open(&self, path: &Path) -> VfsResult<Evidence> {
         let base = open_base(path)?;
         let base_spec = Locator::file(path);
-        match self.openers.open(base, base_spec.clone(), 0)? {
-            Some(r) => Ok(Evidence {
+        if let Some(r) = self.openers.open(base.clone(), base_spec.clone(), 0)? {
+            return Ok(Evidence {
                 root: r.spec,
                 fs: Some(r.fs),
-            }),
-            None => Ok(Evidence {
-                root: base_spec,
-                fs: None,
-            }),
+            });
         }
+        // The disk/volume/filesystem resolver found no raw sector stack. Before
+        // declaring a clean unknown, try the ADR-0014 container fallback: a
+        // loose-file archive (zip/7z/tar) or a logical container (AD1 /
+        // AFF4-Logical / DAR) carries a browsable file tree but no sector stream,
+        // so the resolver declines it. An archive *wrapping* a nested image
+        // resolves above (via the resolver's descend_packaging), so only genuinely
+        // loose containers reach here — this never shadows a real disk image.
+        let name = path.file_name().and_then(|s| s.to_str());
+        if let Some(fs) = containerfs::open_archive(&base, name)? {
+            return Ok(container_evidence(&base_spec, fs));
+        }
+        if let Some(fs) = containerfs::open_logical(path)? {
+            return Ok(container_evidence(&base_spec, fs));
+        }
+        Ok(Evidence {
+            root: base_spec,
+            fs: None,
+        })
     }
 
     /// Open evidence at `path` and surface **every** partition, not just the
@@ -245,6 +261,16 @@ pub struct SnapshotView {
     pub name: String,
     /// A locator that [`Vfs::open_snapshot`] re-opens end-to-end.
     pub locator: Locator,
+}
+
+/// Build [`Evidence`] for an ADR-0014 container fallback: top the base locator
+/// with the mounted filesystem's kind so the locator names the browsable layer.
+fn container_evidence(base_spec: &Locator, fs: DynFs) -> Evidence {
+    let root = base_spec.clone().push(Layer::Fs {
+        kind: fs.kind(),
+        at: NodeAddr::Path(Vec::new()),
+    });
+    Evidence { root, fs: Some(fs) }
 }
 
 /// True when a resolved locator's top layer is an APFS filesystem.

@@ -66,8 +66,14 @@ ufs          = { version = "0.1.2", package = "ufs-core", features = ["vfs"] }
 udf-forensic = { version = "0.2.1", features = ["vfs"] }
 
 # Archive/compression layer — the `ArchiveOpen` opener that peels
-# gzip/bzip2/tar/zip/7z so archives resolve as a transparent layer.
+# gzip/bzip2/tar/zip/7z so archives resolve as a transparent layer. Its
+# `Archive` reader also backs the ADR-0014 loose-archive browsable FileSystem.
 archive-core = { version = "0.1.1", features = ["vfs"] }
+
+# Logical file containers (AD1 / AFF4-Logical / DAR) — the `logical` module's
+# `LogicalImage` backs the ADR-0014 logical-container browsable FileSystem. Full
+# default feature set (batteries-included): the logical backends ship by default.
+disk-forensic = "0.11"
 
 # Encryption (FDE) layer readers — each impls `forensic_vfs::EncryptionLayer`
 # behind its `vfs` feature; the engine registers a signature prober per scheme.
