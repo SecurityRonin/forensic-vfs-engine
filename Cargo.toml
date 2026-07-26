@@ -2,7 +2,7 @@
 name = "forensic-vfs-engine"
 version = "0.1.5"
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.93"
 license = "Apache-2.0"
 description = "The forensic-vfs registry + resolver: one Vfs::open(path) that detects the container/volume/filesystem stack of a piece of evidence and mounts a read-only dyn FileSystem."
 repository = "https://github.com/SecurityRonin/forensic-vfs-engine"
@@ -66,8 +66,28 @@ ufs          = { version = "0.1.2", package = "ufs-core", features = ["vfs"] }
 udf-forensic = { version = "0.2.1", features = ["vfs"] }
 
 # Archive/compression layer — the `ArchiveOpen` opener that peels
-# gzip/bzip2/tar/zip/7z so archives resolve as a transparent layer.
+# gzip/bzip2/tar/zip/7z so archives resolve as a transparent layer. Its
+# `Archive` reader also backs the ADR-0014 loose-archive browsable FileSystem.
 archive-core = { version = "0.1.1", features = ["vfs"] }
+
+# Logical file containers (AD1 / AFF4-Logical / DAR), backing the ADR-0014
+# deep-path logical browsable FileSystem with direct standalone readers
+# (ad1-core, dar-core, aff4 — all MSRV 1.85). This drops disk-forensic's 1.96
+# edge; the engine's MSRV floor is 1.93, set by archive-core -> sevenz-rust2
+# ^0.21 (7z, incl. its 0.21.1 path-traversal fix), NOT by these readers. See ADR-0014.
+#
+# AD1: ad1-core's `vfs` adapter targets forensic-vfs 0.7 (the engine's version),
+# so its `Ad1Vfs` is mounted directly as a `dyn FileSystem`.
+ad1 = { version = "0.1.1", package = "ad1-core", features = ["vfs"] }
+# DAR: dar-core's own `vfs` adapter targets forensic-vfs 0.1 (a different major
+# than the engine's 0.7), so its FileSystem impl is NOT this engine's trait. The
+# bare reader is used instead (no `vfs` feature) and composed into the engine's
+# own synthetic-tree ContainerFs. Default features keep all six DAR codecs
+# (batteries-included); `vfs` is omitted for trait-version compatibility, not to
+# slim the crate.
+dar = { version = "0.7", package = "dar-core" }
+# AFF4-Logical (aff4:FileImage) reuses the `aff4` decoder already declared above
+# (LogicalContainer), composed into the same synthetic-tree ContainerFs.
 
 # Encryption (FDE) layer readers — each impls `forensic_vfs::EncryptionLayer`
 # behind its `vfs` feature; the engine registers a signature prober per scheme.
@@ -78,6 +98,17 @@ veracrypt = { version = "0.2.2", package = "veracrypt-core", features = ["vfs"] 
 
 [dev-dependencies]
 tempfile = "3"
+# Independent oracle for the archive/logical fallback tests: build a fixture
+# archive with a *different* implementation than the one under test (archive-core),
+# per Doer-Checker. Pure-Rust, low-MSRV; already in the dependency graph via
+# archive-core's tar backend.
+tar = "0.4"
+# Spec-faithful fixture builders for the logical-container fallback tests: mint an
+# AD1 (ad1-core's `testfix`) and an AFF4-Logical (aff4's `test-helpers`) in memory
+# so the tests need no committed binary fixtures. Both mint with independent
+# encoders (flate2 / zip), an oracle distinct from the readers under test.
+ad1 = { version = "0.1.1", package = "ad1-core", features = ["testfix"] }
+aff4 = { version = "0.2", features = ["test-helpers"] }
 
 [lints.rust]
 unsafe_code = "forbid"

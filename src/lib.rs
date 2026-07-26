@@ -23,6 +23,8 @@ use forensic_vfs::{
 use forensic_vfs_resolver::SourceOpen;
 use state_history_forensic::epoch::EpochTag;
 
+mod containerfs;
+
 /// One resolved piece of evidence: its locator plus the mounted filesystem, when
 /// the engine detected one (`None` for a source no registered prober recognized).
 pub struct Evidence {
@@ -59,16 +61,49 @@ impl Vfs {
     pub fn open(&self, path: &Path) -> VfsResult<Evidence> {
         let base = open_base(path)?;
         let base_spec = Locator::file(path);
-        match self.openers.open(base, base_spec.clone(), 0)? {
-            Some(r) => Ok(Evidence {
+
+        // AFF4-Logical (aff4:FileImage) is a *zip-based* logical container the
+        // sector-stream resolver cannot handle, and it must be caught BEFORE the
+        // resolver: the physical AFF4 decoder claims the `PK` magic and errors
+        // "no ImageStream" (it never returns a clean `None`), and the plain-zip
+        // archive reader would list the container's internal turtle/segments
+        // instead of the captured files. Gate on the ZIP local-file magic so a
+        // non-zip evidence file pays nothing; `container_kind` then declines a
+        // physical/encrypted AFF4 (left to the resolver's decoder below).
+        if base_has_zip_magic(&base)? {
+            if let Some(fs) = containerfs::open_aff4_logical(path)? {
+                return Ok(container_evidence(&base_spec, fs));
+            }
+        }
+
+        if let Some(r) = self.openers.open(base.clone(), base_spec.clone(), 0)? {
+            return Ok(Evidence {
                 root: r.spec,
                 fs: Some(r.fs),
-            }),
-            None => Ok(Evidence {
-                root: base_spec,
-                fs: None,
-            }),
+            });
         }
+        // The disk/volume/filesystem resolver found no raw sector stack. Before
+        // declaring a clean unknown, try the ADR-0014 loose-container fallbacks: a
+        // loose-file archive (zip/7z/tar), an AD1, or a DAR archive carries a
+        // browsable file tree but no sector stream, so the resolver declines it. An
+        // archive *wrapping* a nested image resolves above (via the resolver's
+        // descend_packaging), so only genuinely loose containers reach here — this
+        // never shadows a real disk image. Each opener declines cleanly (`None`)
+        // on a non-matching input, so the order is a fall-through, not a claim.
+        let name = path.file_name().and_then(|s| s.to_str());
+        if let Some(fs) = containerfs::open_archive(&base, name)? {
+            return Ok(container_evidence(&base_spec, fs));
+        }
+        if let Some(fs) = containerfs::open_ad1(path)? {
+            return Ok(container_evidence(&base_spec, fs));
+        }
+        if let Some(fs) = containerfs::open_dar(path)? {
+            return Ok(container_evidence(&base_spec, fs));
+        }
+        Ok(Evidence {
+            root: base_spec,
+            fs: None,
+        })
     }
 
     /// Open evidence at `path` and surface **every** partition, not just the
@@ -247,6 +282,16 @@ pub struct SnapshotView {
     pub locator: Locator,
 }
 
+/// Build [`Evidence`] for an ADR-0014 container fallback: top the base locator
+/// with the mounted filesystem's kind so the locator names the browsable layer.
+fn container_evidence(base_spec: &Locator, fs: DynFs) -> Evidence {
+    let root = base_spec.clone().push(Layer::Fs {
+        kind: fs.kind(),
+        at: NodeAddr::Path(Vec::new()),
+    });
+    Evidence { root, fs: Some(fs) }
+}
+
 /// True when a resolved locator's top layer is an APFS filesystem.
 fn is_apfs(spec: &Locator) -> bool {
     matches!(
@@ -343,6 +388,16 @@ fn open_base(path: &Path) -> VfsResult<DynSource> {
     } else {
         Ok(Arc::new(FileSource::open(path)?))
     }
+}
+
+/// True when a source begins with the ZIP local-file-header magic (`PK\x03\x04`).
+/// Gates the AFF4-Logical probe so non-zip evidence never pays for an AFF4
+/// `container_kind` open (a physical AFF4 also carries this magic and is then
+/// declined by `container_kind`, falling through to the resolver's decoder).
+fn base_has_zip_magic(base: &DynSource) -> VfsResult<bool> {
+    let mut magic = [0u8; 4];
+    let n = base.read_at(0, &mut magic)?;
+    Ok(n >= 4 && magic == [0x50, 0x4b, 0x03, 0x04])
 }
 
 fn is_ewf(path: &Path) -> bool {
