@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7](https://github.com/SecurityRonin/forensic-vfs-engine/compare/forensic-vfs-engine-v0.1.6...forensic-vfs-engine-v0.1.7) - 2026-07-26
+
+### Fixed
+
+- *(open)* route plain zip to the archive surface before the resolver's Aff4Decoder shadows it
+
 ## [0.1.6](https://github.com/SecurityRonin/forensic-vfs-engine/compare/forensic-vfs-engine-v0.1.5...forensic-vfs-engine-v0.1.6) - 2026-07-26
 
 ### Added
