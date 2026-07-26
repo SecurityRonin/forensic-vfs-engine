@@ -1,21 +1,27 @@
-//! ADR-0014: archive (zip/7z/tar) and logical (AD1/AFF4-Logical/DAR) containers
-//! surfaced as a browsable [`forensic_vfs::FileSystem`].
+//! ADR-0014 (deep path): archive (zip/7z/tar) and logical (AD1/AFF4-Logical/DAR)
+//! containers surfaced as a browsable [`forensic_vfs::FileSystem`], using direct
+//! standalone readers (no `disk-forensic`) so the engine keeps its low MSRV.
 //!
 //! These containers carry a *file tree*, not a raw sector stream, so the
 //! disk/volume/filesystem resolver declines them and [`crate::Vfs::open`] would
-//! otherwise yield `Evidence { fs: None }`. Both backends expose the same shape —
-//! a flat list of `/`-separated member names plus a by-index reader — so one
-//! synthetic-tree [`ContainerFs`] serves both: a synthetic root (node 0) plus one
-//! node per member, wired parent→children by splitting each name on `/`, with any
-//! intermediate directory synthesized when a producer omits its record. Nodes are
-//! addressed by [`FileId::Opaque`] carrying an index into the node vector; a file
-//! node keeps its backing member index so [`FileSystem::read_at`] extracts it.
+//! otherwise yield `Evidence { fs: None }`. There are two shapes:
 //!
-//! The backend readers extract by `&mut self`, so each is wrapped in a
+//! - **AD1** — ad1-core ships its own forensic-vfs 0.7 adapter ([`ad1::Ad1Vfs`]),
+//!   the engine's trait version, so it is mounted **directly** ([`open_ad1`]).
+//! - **DAR and AFF4-Logical** — dar-core's adapter targets forensic-vfs 0.1 (a
+//!   different major) and aff4 has none, so both expose a flat member list + a
+//!   by-index/​by-key reader, composed into one synthetic-tree [`ContainerFs`]:
+//!   a synthetic root (node 0) plus one node per member, wired parent→children by
+//!   splitting each name on `/`, intermediate directories synthesized when a
+//!   producer omits the record. Nodes are addressed by [`FileId::Opaque`] carrying
+//!   an index into the node vector; a file node keeps its backing member index so
+//!   [`FileSystem::read_at`] extracts it.
+//!
+//! The composed backend readers extract by `&mut self`, so each is wrapped in a
 //! poison-recovering [`Mutex`] and one handle serves N workers; a per-node
 //! decompressed-content cache inflates each member at most once.
 //!
-//! ## Mapping notes / limits (shared by both backends)
+//! ## Mapping notes / limits (shared by the composed DAR/AFF4-Logical backends)
 //! - **Times / ownership.** Neither backend API surfaces per-member MAC times or
 //!   uid/gid/mode, so those [`FsMeta`] fields are honestly `None` — never a
 //!   fabricated epoch.
@@ -470,15 +476,55 @@ pub(crate) fn open_archive(base: &DynSource, name: Option<&str>) -> VfsResult<Op
     ))))
 }
 
-// --- Logical backend (AD1 / AFF4-Logical / DAR via disk-forensic) ---------------
+// --- AD1 backend (ad1-core's native forensic-vfs 0.7 adapter) -------------------
 
-/// The `disk_forensic::logical::LogicalImage` reader as a [`Members`] backend.
-struct LogicalBackend(disk_forensic::logical::LogicalImage);
+/// Try to mount `path` as a browsable AD1 logical image (FTK Imager "Custom
+/// Content Image"). ad1-core ships its own `forensic_vfs::FileSystem` adapter on
+/// forensic-vfs 0.7 — the engine's version — so [`ad1::Ad1Vfs`] is returned
+/// directly, with no synthetic-tree wrapper. `Ok(None)` when the file is not an
+/// AD1: ad1-core maps its `NotAd1` signal to a bootstrap failure at the
+/// `"ad1 mount"` stage, the "not this format" verdict, so it is declined cleanly.
+///
+/// # Errors
+/// A loud [`VfsError`] for an AD1 that fails to parse — I/O, an unsupported
+/// (e.g. encrypted) feature, or a malformed structure — never swallowed.
+pub(crate) fn open_ad1(path: &Path) -> VfsResult<Option<DynFs>> {
+    match ad1::Ad1Vfs::open(path) {
+        Ok(fs) => Ok(Some(Arc::new(fs))),
+        Err(VfsError::Bootstrap {
+            stage: "ad1 mount", ..
+        }) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
 
-impl Members for LogicalBackend {
+// --- DAR backend (dar-core reader over the synthetic-tree ContainerFs) ----------
+
+/// The `dar::DarReader` reader as a [`Members`] backend. dar-core's own
+/// forensic-vfs adapter targets forensic-vfs 0.1 (a different major than the
+/// engine's 0.7), so its `FileSystem` impl is not this engine's trait; the bare
+/// reader is composed into the shared synthetic-tree [`ContainerFs`] instead.
+/// DAR extracts by the byte-exact stored path, so each member index maps back to
+/// its raw path key.
+struct DarBackend {
+    reader: dar::DarReader<std::fs::File>,
+    /// Byte-exact stored paths, indexed parallel to the [`Flat`] member list.
+    paths: Vec<Vec<u8>>,
+}
+
+impl Members for DarBackend {
     fn read_member(&mut self, index: usize) -> VfsResult<Vec<u8>> {
-        self.0.read_file(index).map_err(|e| VfsError::Decode {
-            layer: "logical",
+        // Clone the key so the `&self.paths` borrow ends before the `&mut` extract.
+        let key = self
+            .paths
+            .get(index)
+            .ok_or(VfsError::Unsupported {
+                layer: "dar member",
+                scheme: format!("index {index} out of range"),
+            })?
+            .clone();
+        self.reader.extract(&key).map_err(|e| VfsError::Decode {
+            layer: "dar",
             offset: 0,
             detail: e.to_string(),
             bytes: SmallHex::new(&[]),
@@ -486,53 +532,130 @@ impl Members for LogicalBackend {
     }
 }
 
-/// Map a logical container format to the closest fleet [`FsKind`].
-fn logical_kind(format: disk_forensic::container::ContainerFormat) -> FsKind {
-    use disk_forensic::container::ContainerFormat;
-    match format {
-        ContainerFormat::Ad1 => FsKind::AD1,
-        ContainerFormat::Dar => FsKind::DAR,
-        // Logical AFF4 (aff4:FileImage); no dedicated fleet FsKind.
-        _ => FsKind::from_name("aff4"),
-    }
-}
-
-/// Try to mount `path` as a browsable logical container (AD1/AFF4-Logical/DAR).
-/// `Ok(None)` when the file is not a logical container ([`LogicalError::NotLogical`]).
+/// Try to mount `path` as a browsable DAR archive (Denis Corbin Disk ARchiver,
+/// including the Passware variant). `Ok(None)` when the file is not a DAR
+/// ([`dar::DarError::NotADar`] — the "not this format" verdict).
 ///
 /// # Errors
-/// A loud [`VfsError::Decode`] when the file is a logical container that fails to
-/// parse (corrupt/encrypted), or an I/O error opening it.
-pub(crate) fn open_logical(path: &Path) -> VfsResult<Option<DynFs>> {
-    let img = match disk_forensic::logical::open(path) {
-        Ok(img) => img,
-        Err(disk_forensic::logical::LogicalError::NotLogical(..)) => return Ok(None),
+/// A loud [`VfsError`] for a DAR that fails to open (I/O) or whose catalogue is
+/// corrupt.
+pub(crate) fn open_dar(path: &Path) -> VfsResult<Option<DynFs>> {
+    let file = std::fs::File::open(path).map_err(|source| VfsError::Io {
+        op: "dar open",
+        source,
+    })?;
+    let reader = match dar::DarReader::open(file) {
+        Ok(r) => r,
+        Err(dar::DarError::NotADar) => return Ok(None),
         Err(e) => {
             return Err(VfsError::Decode {
-                layer: "logical",
+                layer: "dar",
                 offset: 0,
                 detail: e.to_string(),
                 bytes: SmallHex::new(&[]),
             })
         }
     };
+    // `entries()` returns an owned Vec, so the borrow ends before `reader` moves
+    // into the backend. Keep the byte-exact path per index for extraction; the
+    // tree name is the lossy-UTF-8 display form (DAR paths are not guaranteed
+    // UTF-8), matching read-by-index so the extraction key stays byte-exact.
+    let entries = reader.entries();
+    let mut paths: Vec<Vec<u8>> = Vec::with_capacity(entries.len());
+    let members: Vec<Flat> = entries
+        .iter()
+        .enumerate()
+        .map(|(index, e)| {
+            paths.push(e.path.clone());
+            Flat {
+                name: String::from_utf8_lossy(&e.path).into_owned(),
+                size: e.size,
+                is_dir: matches!(e.kind, dar::EntryKind::Directory),
+                index,
+            }
+        })
+        .collect();
+    let nodes = build_tree(&members);
+    Ok(Some(Arc::new(ContainerFs::new(
+        DarBackend { reader, paths },
+        nodes,
+        FsKind::DAR,
+    ))))
+}
 
-    let kind = logical_kind(img.format());
-    let members: Vec<Flat> = img
-        .entries()
+// --- AFF4-Logical backend (aff4:FileImage over the synthetic-tree ContainerFs) --
+
+/// The `aff4::LogicalContainer` reader as a [`Members`] backend. aff4 has no
+/// forensic-vfs adapter, so its flat file list is composed into the shared
+/// synthetic-tree [`ContainerFs`]. `read_file` needs `&mut self` while
+/// `files()` borrows `&self`, so the entry is cloned to release that borrow.
+struct Aff4LogicalBackend(aff4::LogicalContainer);
+
+impl Members for Aff4LogicalBackend {
+    fn read_member(&mut self, index: usize) -> VfsResult<Vec<u8>> {
+        let entry = self
+            .0
+            .files()
+            .get(index)
+            .ok_or(VfsError::Unsupported {
+                layer: "aff4-logical member",
+                scheme: format!("index {index} out of range"),
+            })?
+            .clone();
+        self.0.read_file(&entry).map_err(|e| VfsError::Decode {
+            layer: "aff4-logical",
+            offset: 0,
+            detail: e.to_string(),
+            bytes: SmallHex::new(&[]),
+        })
+    }
+}
+
+/// Try to mount `path` as a browsable AFF4-Logical (aff4:FileImage) container.
+///
+/// AFF4 is zip-based, so this is probed *ahead of* the sector-stream resolver and
+/// the plain-archive reader (both mis-handle it: the physical AFF4 decoder errors
+/// "no ImageStream", and a plain-zip reader would list the container's internal
+/// turtle/segments instead of the captured files). `container_kind` classifies
+/// the container from one turtle read.
+///
+/// `Ok(None)` for anything that is not an AFF4-Logical container: a non-AFF4 file
+/// (`container_kind` errors), a physical disk AFF4, or an encrypted AFF4 — the
+/// last two are left to the resolver's physical decoder.
+///
+/// # Errors
+/// A loud [`VfsError::Decode`] when the file *is* an AFF4-Logical container but
+/// its metadata or segments fail to parse.
+pub(crate) fn open_aff4_logical(path: &Path) -> VfsResult<Option<DynFs>> {
+    match aff4::container_kind(path) {
+        Ok(aff4::ContainerKind::Logical) => {}
+        // Physical / encrypted AFF4 → the resolver's physical decoder; a non-AFF4
+        // file makes container_kind error — decline cleanly either way.
+        Ok(_) | Err(_) => return Ok(None),
+    }
+    let container = aff4::LogicalContainer::open(path).map_err(|e| VfsError::Decode {
+        layer: "aff4-logical",
+        offset: 0,
+        detail: e.to_string(),
+        bytes: SmallHex::new(&[]),
+    })?;
+    let members: Vec<Flat> = container
+        .files()
         .iter()
         .enumerate()
         .map(|(index, e)| Flat {
-            name: e.path.clone(),
+            name: e.original_file_name.clone(),
             size: e.size,
-            is_dir: e.is_dir,
+            // AFF4-L records a flat file list with no directory nodes; the tree is
+            // derived from the `/`-separated original file names.
+            is_dir: false,
             index,
         })
         .collect();
     let nodes = build_tree(&members);
     Ok(Some(Arc::new(ContainerFs::new(
-        LogicalBackend(img),
+        Aff4LogicalBackend(container),
         nodes,
-        kind,
+        FsKind::from_name("aff4"),
     ))))
 }

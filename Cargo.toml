@@ -70,10 +70,23 @@ udf-forensic = { version = "0.2.1", features = ["vfs"] }
 # `Archive` reader also backs the ADR-0014 loose-archive browsable FileSystem.
 archive-core = { version = "0.1.1", features = ["vfs"] }
 
-# Logical file containers (AD1 / AFF4-Logical / DAR) — the `logical` module's
-# `LogicalImage` backs the ADR-0014 logical-container browsable FileSystem. Full
-# default feature set (batteries-included): the logical backends ship by default.
-disk-forensic = "0.11"
+# Logical file containers (AD1 / AFF4-Logical / DAR), backing the ADR-0014
+# deep-path logical browsable FileSystem with direct standalone readers — all
+# MSRV 1.85, so the engine keeps its low MSRV (no disk-forensic → no
+# sevenz-rust2/1.96 pull from that edge; see the ADR).
+#
+# AD1: ad1-core's `vfs` adapter targets forensic-vfs 0.7 (the engine's version),
+# so its `Ad1Vfs` is mounted directly as a `dyn FileSystem`.
+ad1 = { version = "0.1.1", package = "ad1-core", features = ["vfs"] }
+# DAR: dar-core's own `vfs` adapter targets forensic-vfs 0.1 (a different major
+# than the engine's 0.7), so its FileSystem impl is NOT this engine's trait. The
+# bare reader is used instead (no `vfs` feature) and composed into the engine's
+# own synthetic-tree ContainerFs. Default features keep all six DAR codecs
+# (batteries-included); `vfs` is omitted for trait-version compatibility, not to
+# slim the crate.
+dar = { version = "0.7", package = "dar-core" }
+# AFF4-Logical (aff4:FileImage) reuses the `aff4` decoder already declared above
+# (LogicalContainer), composed into the same synthetic-tree ContainerFs.
 
 # Encryption (FDE) layer readers — each impls `forensic_vfs::EncryptionLayer`
 # behind its `vfs` feature; the engine registers a signature prober per scheme.
