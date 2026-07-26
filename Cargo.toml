@@ -2,7 +2,7 @@
 name = "forensic-vfs-engine"
 version = "0.1.4"
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.93"
 license = "Apache-2.0"
 description = "The forensic-vfs registry + resolver: one Vfs::open(path) that detects the container/volume/filesystem stack of a piece of evidence and mounts a read-only dyn FileSystem."
 repository = "https://github.com/SecurityRonin/forensic-vfs-engine"
