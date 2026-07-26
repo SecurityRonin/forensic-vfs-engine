@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6](https://github.com/SecurityRonin/forensic-vfs-engine/compare/forensic-vfs-engine-v0.1.5...forensic-vfs-engine-v0.1.6) - 2026-07-26
+
+### Added
+
+- surface archive + logical containers as browsable FileSystems (ADR-0014) ([#2](https://github.com/SecurityRonin/forensic-vfs-engine/pull/2))
+
 ## [0.1.5](https://github.com/SecurityRonin/forensic-vfs-engine/compare/forensic-vfs-engine-v0.1.4...forensic-vfs-engine-v0.1.5) - 2026-07-24
 
 ### Added
