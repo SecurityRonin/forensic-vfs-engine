@@ -75,7 +75,7 @@ impl Vfs {
                 Ok(aff4::ContainerKind::Logical) => {
                     if let Some(fs) = containerfs::open_aff4_logical(path)? {
                         return Ok(container_evidence(&base_spec, fs));
-                    }
+                    } // cov:unreachable: open_aff4_logical returns Some or Err on a Logical container, never None
                 }
                 // A physical / encrypted AFF4 → the resolver's Aff4Decoder handles
                 // it below.
@@ -90,7 +90,7 @@ impl Vfs {
                     let name = path.file_name().and_then(|s| s.to_str());
                     if let Some(fs) = containerfs::open_archive(&base, name)? {
                         return Ok(container_evidence(&base_spec, fs));
-                    }
+                    } // cov:unreachable: base has PK magic, so open_archive returns Some or Err, never None
                 }
             }
         }

@@ -120,3 +120,30 @@ builder is ported from `btrfs-forensic`'s own `core/src/vfs.rs` crafted-image
 test (`walkable_image`) — the layout that repo verifies `BtrfsFs::open` accepts.
 Since the engine only calls `BtrfsFs::open`, the same crafted image drives its
 `BtrfsProbe` dispatch arm. Oracle: the `btrfs-forensic` crafted-image tests.
+
+## DAR (Denis Corbin Disk ARchiver)
+
+`loose.dar` (MD5 `a52cf0e04c29705d5ac5f238394c0a1a`, 1088 bytes) is a minimal
+single-slice DAR archive minted with the **`dar` CLI 2.8.5** (Homebrew) — a
+producer wholly independent of the `dar-core` reader that decodes it
+(Doer-Checker). It holds three files and one directory:
+`hello.txt` = `"hello from dar\n"`, `sub_note.txt` = `"nested dar payload\n"`,
+`sub/deep.txt` = `"deep\n"`. The content is trivial self-authored data, freely
+redistributable. Mint command:
+
+```
+mkdir -p src/sub
+printf 'hello from dar\n'     > src/hello.txt
+printf 'nested dar payload\n' > src/sub_note.txt
+printf 'deep\n'              > src/sub/deep.txt
+dar -c loose -R src -g . -q        # writes loose.1.dar
+mv loose.1.dar tests/data/loose.dar
+```
+
+A `.dar` carries no ZIP magic, so `Vfs::open` flows it through the resolver to the
+ADR-0014 `open_dar` fallback. Oracle: `dar-core`'s `DarReader` lists the four
+entries above and extracts `hello.txt` back verbatim. Used by
+`archive_logical_fallback.rs` (`dar_container_surfaces_a_browsable_filesystem`)
+and the `containerfs` unit tests (`dar_backend_read_and_oob`,
+`dar_backend_surfaces_an_extract_error`, `open_dar_surfaces_a_parse_error`, which
+reads a 64-byte-truncated copy).
