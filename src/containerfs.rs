@@ -207,11 +207,12 @@ fn build_tree(members: &[Flat]) -> Vec<Node> {
                 if let Some(&existing) = by_path.get(&acc) {
                     // A directory implied earlier now has its explicit record;
                     // keep its identity, just attach the backing member.
-                    if let Some(n) = nodes.get_mut(usize::try_from(existing).unwrap_or(usize::MAX))
-                    {
-                        if n.entry_idx.is_none() {
-                            n.entry_idx = Some(m.index);
-                        }
+                    let Some(n) = nodes.get_mut(usize::try_from(existing).unwrap_or(usize::MAX))
+                    else {
+                        continue; // cov:unreachable: by_path holds in-range node ids by construction
+                    };
+                    if n.entry_idx.is_none() {
+                        n.entry_idx = Some(m.index);
                     }
                 } else {
                     let id = nodes.len() as u64;
@@ -322,10 +323,11 @@ impl<R: Members> FileSystem for ContainerFs<R> {
             return Err(not_a_dir(parent)?);
         }
         for &child in &node.children {
-            if let Some(c) = self.nodes.get(usize::try_from(child).unwrap_or(usize::MAX)) {
-                if c.name == name {
-                    return Ok(Some(FileId::Opaque(child)));
-                }
+            let Some(c) = self.nodes.get(usize::try_from(child).unwrap_or(usize::MAX)) else {
+                continue; // cov:unreachable: children hold in-range node ids by construction
+            };
+            if c.name == name {
+                return Ok(Some(FileId::Opaque(child)));
             }
         }
         Ok(None)
@@ -367,7 +369,7 @@ impl<R: Members> FileSystem for ContainerFs<R> {
         };
         let data = self.content(idx, entry_idx)?;
         let Ok(start) = usize::try_from(off) else {
-            return Ok(0);
+            return Ok(0); // cov:unreachable: off is u64; usize::try_from only fails on <64-bit targets
         };
         if start >= data.len() {
             return Ok(0);
@@ -658,4 +660,401 @@ pub(crate) fn open_aff4_logical(path: &Path) -> VfsResult<Option<DynFs>> {
         nodes,
         FsKind::from_name("aff4"),
     ))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use forensic_vfs::{FileId, ImageSource};
+    use std::io::Write;
+
+    const DAR_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/loose.dar");
+
+    /// A whole-image byte source over an in-memory buffer, for the archive openers
+    /// (which drain the source into a Vec).
+    struct Mem(Vec<u8>);
+    impl ImageSource for Mem {
+        fn len(&self) -> u64 {
+            self.0.len() as u64
+        }
+        fn read_at(&self, off: u64, buf: &mut [u8]) -> VfsResult<usize> {
+            let o = usize::try_from(off).unwrap_or(usize::MAX).min(self.0.len());
+            let s = &self.0[o..];
+            let n = s.len().min(buf.len());
+            buf[..n].copy_from_slice(&s[..n]);
+            Ok(n)
+        }
+    }
+    fn mem(b: Vec<u8>) -> DynSource {
+        Arc::new(Mem(b))
+    }
+
+    /// Build a plain (Stored) zip in memory from `(name, bytes)` members.
+    fn plain_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut c = std::io::Cursor::new(Vec::new());
+        {
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            let mut zw = zip::ZipWriter::new(&mut c);
+            for (name, data) in entries {
+                zw.start_file(*name, opts).unwrap();
+                zw.write_all(data).unwrap();
+            }
+            zw.finish().unwrap();
+        }
+        c.into_inner()
+    }
+
+    /// A [`Members`] backend over an in-memory member table, with an optional
+    /// index whose read fails (to exercise the content-decode error path).
+    struct MockMembers {
+        data: Vec<Vec<u8>>,
+        fail_index: Option<usize>,
+    }
+    impl Members for MockMembers {
+        fn read_member(&mut self, index: usize) -> VfsResult<Vec<u8>> {
+            if Some(index) == self.fail_index {
+                return Err(VfsError::Io {
+                    op: "mock read",
+                    source: std::io::Error::other("boom"),
+                });
+            }
+            self.data
+                .get(index)
+                .cloned()
+                .ok_or_else(|| VfsError::Unsupported {
+                    layer: "mock",
+                    scheme: format!("index {index} out of range"),
+                })
+        }
+    }
+
+    /// The canonical member list exercising every `build_tree` branch:
+    /// a bare "/" (skipped), a top file, an explicit dir leaf, a child that
+    /// reuses that dir as an intermediate, an implied dir later given its explicit
+    /// record, and an empty file.
+    fn sample_members() -> Vec<Flat> {
+        vec![
+            Flat {
+                name: "/".into(),
+                size: 0,
+                is_dir: false,
+                index: 0,
+            },
+            Flat {
+                name: "top.txt".into(),
+                size: 14,
+                is_dir: false,
+                index: 1,
+            },
+            Flat {
+                name: "onlydir/".into(),
+                size: 0,
+                is_dir: true,
+                index: 2,
+            },
+            Flat {
+                name: "onlydir/inside.txt".into(),
+                size: 6,
+                is_dir: false,
+                index: 3,
+            },
+            Flat {
+                name: "imp/leaf.txt".into(),
+                size: 4,
+                is_dir: false,
+                index: 4,
+            },
+            Flat {
+                name: "imp".into(),
+                size: 0,
+                is_dir: true,
+                index: 5,
+            },
+            Flat {
+                name: "empty.dat".into(),
+                size: 0,
+                is_dir: false,
+                index: 6,
+            },
+        ]
+    }
+
+    fn sample_fs(fail_index: Option<usize>) -> ContainerFs<MockMembers> {
+        let members = sample_members();
+        let nodes = build_tree(&members);
+        let data = vec![
+            Vec::new(),                  // 0: "/" (skipped)
+            b"hello from mock".to_vec(), // 1: top.txt (15 bytes)
+            Vec::new(),                  // 2: onlydir/
+            b"inside".to_vec(),          // 3: inside.txt
+            b"leaf".to_vec(),            // 4: leaf.txt
+            Vec::new(),                  // 5: imp
+            Vec::new(),                  // 6: empty.dat
+        ];
+        ContainerFs::new(
+            MockMembers { data, fail_index },
+            nodes,
+            FsKind::from_name("mock"),
+        )
+    }
+
+    fn child(fs: &ContainerFs<MockMembers>, parent: FileId, name: &[u8]) -> FileId {
+        fs.lookup(parent, name).unwrap().unwrap()
+    }
+
+    #[test]
+    fn container_fs_surface_and_arms() {
+        let fs = sample_fs(None);
+        let root = fs.root();
+        assert_eq!(fs.kind(), FsKind::from_name("mock"));
+        assert_eq!(root, FileId::Opaque(0));
+
+        // Static descriptors.
+        assert_eq!(fs.sector_sizes().logical, ARCHIVE_BLOCK);
+        assert!(matches!(
+            fs.timestamp_zone(),
+            forensic_vfs::TimeZonePolicy::LocalUnknown
+        ));
+
+        // build_tree branches: the bare "/" name is skipped, so it is not a child.
+        let root_names: Vec<Vec<u8>> = fs
+            .read_dir(root)
+            .unwrap()
+            .map(|e| e.unwrap().name)
+            .collect();
+        assert!(root_names.iter().any(|n| n == b"top.txt"));
+        assert!(root_names.iter().any(|n| n == b"onlydir"));
+        assert!(root_names.iter().any(|n| n == b"imp"));
+        assert!(root_names.iter().any(|n| n == b"empty.dat"));
+
+        // An implied intermediate reused by a later sibling (onlydir/inside.txt),
+        // and an implied dir later given its explicit record (imp).
+        let onlydir = child(&fs, root, b"onlydir");
+        assert_eq!(fs.meta(onlydir).unwrap().kind, NodeKind::Dir);
+        let inside = child(&fs, onlydir, b"inside.txt");
+        assert_eq!(fs.meta(inside).unwrap().kind, NodeKind::File);
+        let imp = child(&fs, root, b"imp");
+        let _leaf = child(&fs, imp, b"leaf.txt");
+
+        // extents: a non-empty file yields one run; an empty file yields none.
+        let top = child(&fs, root, b"top.txt");
+        let runs: Vec<_> = fs
+            .extents(top, StreamId::Default)
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(runs.len(), 1);
+        let empty = child(&fs, root, b"empty.dat");
+        assert_eq!(fs.extents(empty, StreamId::Default).unwrap().count(), 0);
+
+        // read_at: happy read, then a second offset served from the content cache,
+        // then a read past EOF, then a directory (no data).
+        let mut buf = vec![0u8; 32];
+        let n = fs.read_at(top, StreamId::Default, 0, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"hello from mock");
+        let n2 = fs.read_at(top, StreamId::Default, 6, &mut buf).unwrap();
+        assert_eq!(&buf[..n2], b"from mock");
+        assert_eq!(
+            fs.read_at(top, StreamId::Default, 9999, &mut buf).unwrap(),
+            0
+        );
+        assert_eq!(
+            fs.read_at(onlydir, StreamId::Default, 0, &mut buf).unwrap(),
+            0
+        );
+
+        // read_link / deleted / unallocated: all empty by design, id validated.
+        assert!(fs.read_link(top, 0).unwrap().is_empty());
+        assert_eq!(fs.deleted().unwrap().count(), 0);
+        assert_eq!(fs.unallocated().unwrap().count(), 0);
+
+        // Error arms: a non-Opaque FileId, a named stream, not-a-directory, a miss.
+        assert!(fs.meta(FileId::IsoExtent { block: 7 }).is_err());
+        assert!(fs.read_at(top, StreamId::Slack, 0, &mut buf).is_err());
+        assert!(fs.extents(top, StreamId::Named(1)).is_err());
+        assert!(fs.read_dir(top).is_err());
+        assert!(fs.lookup(top, b"x").is_err());
+        assert!(fs.lookup(root, b"nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn content_error_propagates() {
+        // A backend read failure surfaces from read_at (not swallowed).
+        let fs = sample_fs(Some(1));
+        let top = child(&fs, fs.root(), b"top.txt");
+        assert!(fs
+            .read_at(top, StreamId::Default, 0, &mut [0u8; 8])
+            .is_err());
+
+        // The mock's own out-of-range arm surfaces a loud error.
+        let mut empty = MockMembers {
+            data: Vec::new(),
+            fail_index: None,
+        };
+        assert!(empty.read_member(5).is_err());
+    }
+
+    #[test]
+    fn archive_kind_maps_each_format() {
+        assert_eq!(archive_kind(archive_core::Format::Zip), FsKind::ZIP);
+        assert_eq!(
+            archive_kind(archive_core::Format::SevenZip),
+            FsKind::from_name("7z")
+        );
+        assert_eq!(
+            archive_kind(archive_core::Format::Tar),
+            FsKind::from_name("tar")
+        );
+    }
+
+    #[test]
+    fn archive_backend_read_and_error() {
+        let bytes = plain_zip(&[("a.txt", b"hi")]);
+        let archive = archive_core::Archive::open(&bytes, Some("a.zip"))
+            .unwrap()
+            .unwrap();
+        let mut backend = ArchiveBackend(archive);
+        assert_eq!(backend.read_member(0).unwrap(), b"hi");
+        // An out-of-range index surfaces a loud decode error.
+        assert!(backend.read_member(9999).is_err());
+    }
+
+    #[test]
+    fn open_archive_rejects_corrupt_zip() {
+        // PK magic (so it sniffs as zip) but a truncated body: open must fail loud,
+        // never return Ok(None).
+        let corrupt = mem(b"PK\x03\x04corrupt-not-a-real-zip".to_vec());
+        assert!(open_archive(&corrupt, Some("x.zip")).is_err());
+    }
+
+    #[test]
+    fn open_aff4_logical_declines_a_plain_zip() {
+        // A plain zip is not an AFF4 (container_kind errors) -> Ok(None), so the
+        // resolver's archive layer handles it instead.
+        let mut f = tempfile::Builder::new().suffix(".zip").tempfile().unwrap();
+        f.write_all(&plain_zip(&[("hello.txt", b"hi")])).unwrap();
+        f.flush().unwrap();
+        assert!(open_aff4_logical(f.path()).unwrap().is_none());
+    }
+
+    #[test]
+    fn dar_backend_read_and_oob() {
+        let file = std::fs::File::open(DAR_FIXTURE).unwrap();
+        let reader = dar::DarReader::open(file).unwrap();
+        let entries = reader.entries();
+        let paths: Vec<Vec<u8>> = entries.iter().map(|e| e.path.clone()).collect();
+        // Find a file member (not a directory) to extract.
+        let file_idx = entries
+            .iter()
+            .position(|e| !matches!(e.kind, dar::EntryKind::Directory))
+            .unwrap();
+        let mut backend = DarBackend { reader, paths };
+        assert!(backend.read_member(file_idx).is_ok());
+
+        // An index past the path table surfaces a loud error.
+        let reader2 = dar::DarReader::open(std::fs::File::open(DAR_FIXTURE).unwrap()).unwrap();
+        let mut oob = DarBackend {
+            reader: reader2,
+            paths: Vec::new(),
+        };
+        assert!(oob.read_member(0).is_err());
+    }
+
+    #[test]
+    fn open_dar_missing_file_is_io_error() {
+        assert!(open_dar(Path::new("/nonexistent/definitely-not-here.dar")).is_err());
+    }
+
+    #[test]
+    fn dar_backend_surfaces_an_extract_error() {
+        // A path key absent from the archive fails extraction loud.
+        let reader = dar::DarReader::open(std::fs::File::open(DAR_FIXTURE).unwrap()).unwrap();
+        let mut backend = DarBackend {
+            reader,
+            paths: vec![b"no/such/member".to_vec()],
+        };
+        assert!(backend.read_member(0).is_err());
+    }
+
+    #[test]
+    fn open_dar_surfaces_a_parse_error() {
+        // A truncated DAR (magic intact, catalogue cut) is not the NotADar "not this
+        // format" signal — it is a loud parse error, not a clean decline.
+        let ok = std::fs::read(DAR_FIXTURE).unwrap();
+        let mut f = tempfile::Builder::new().suffix(".dar").tempfile().unwrap();
+        f.write_all(&ok[..64]).unwrap();
+        f.flush().unwrap();
+        assert!(open_dar(f.path()).is_err());
+    }
+
+    #[test]
+    fn open_ad1_surfaces_a_parse_error() {
+        // A truncated AD1 (header intact, body cut) is not the NotAd1 signal
+        // (NotAd1 -> Bootstrap "ad1 mount" -> Ok(None)); it is a loud parse error.
+        let built = ad1::testfix::build(ad1::testfix::sample_tree());
+        let mut f = tempfile::Builder::new().suffix(".ad1").tempfile().unwrap();
+        f.write_all(&built.bytes[..64]).unwrap();
+        f.flush().unwrap();
+        assert!(open_ad1(f.path()).is_err());
+    }
+
+    #[test]
+    fn aff4_logical_read_error_propagates() {
+        // Corrupt hello.txt's segment data (leaving information.turtle intact, so
+        // container_kind stays Logical): the mount succeeds but reading the file
+        // surfaces the segment CRC mismatch loud, never a silent short read.
+        let ok = aff4::testutil::test_aff4_logical(
+            "hello.txt",
+            b"HELLO_AFF4_PAYLOAD_UNIQUE_MARKER",
+            "00000000000000000000000000000000",
+        );
+        let marker = b"HELLO_AFF4_PAYLOAD_UNIQUE_MARKER";
+        let pos = ok.windows(marker.len()).position(|w| w == marker).unwrap();
+        let mut bytes = ok.clone();
+        bytes[pos + 2] ^= 0xff;
+        let mut f = tempfile::Builder::new().suffix(".aff4").tempfile().unwrap();
+        f.write_all(&bytes).unwrap();
+        f.flush().unwrap();
+
+        let fs = open_aff4_logical(f.path()).unwrap().unwrap();
+        let hello = fs.lookup(fs.root(), b"hello.txt").unwrap().unwrap();
+        assert!(fs
+            .read_at(hello, StreamId::Default, 0, &mut [0u8; 64])
+            .is_err());
+    }
+
+    #[test]
+    fn open_aff4_logical_surfaces_an_open_error() {
+        // A Logical turtle whose referenced FileImage segment is absent: container_kind
+        // classifies Logical (the turtle carries an aff4:FileImage), but the open
+        // resolves no ZIP segment for it -> a loud decode error, not a clean decline.
+        let ok = aff4::testutil::test_aff4_logical(
+            "hello.txt",
+            b"payload",
+            "00000000000000000000000000000000",
+        );
+        // Rebuild a zip carrying ONLY the verbatim turtle, dropping the segment it
+        // references, so resolve_segment fails inside LogicalContainer::open.
+        let turtle = {
+            let mut za = zip::ZipArchive::new(std::io::Cursor::new(ok)).unwrap();
+            let mut e = za.by_name("information.turtle").unwrap();
+            let mut s = Vec::new();
+            std::io::Read::read_to_end(&mut e, &mut s).unwrap();
+            s
+        };
+        let mut c = std::io::Cursor::new(Vec::new());
+        {
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            let mut zw = zip::ZipWriter::new(&mut c);
+            zw.start_file("information.turtle", opts).unwrap();
+            zw.write_all(&turtle).unwrap();
+            zw.finish().unwrap();
+        }
+        let mut f = tempfile::Builder::new().suffix(".aff4").tempfile().unwrap();
+        f.write_all(&c.into_inner()).unwrap();
+        f.flush().unwrap();
+        assert!(open_aff4_logical(f.path()).is_err());
+    }
 }

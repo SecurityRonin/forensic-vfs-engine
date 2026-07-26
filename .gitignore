@@ -15,3 +15,7 @@ Thumbs.db
 /fuzz/target
 /fuzz/corpus
 /fuzz/artifacts
+
+# coverage artifacts (cargo-llvm-cov output; CI regenerates)
+*.lcov
+/lcov.info

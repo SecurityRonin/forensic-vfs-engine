@@ -109,6 +109,12 @@ tar = "0.4"
 # encoders (flate2 / zip), an oracle distinct from the readers under test.
 ad1 = { version = "0.1.1", package = "ad1-core", features = ["testfix"] }
 aff4 = { version = "0.2", features = ["test-helpers"] }
+# Independent oracle for the plain-zip archive fallback test: write a plain zip
+# with the `zip` crate (a different implementation than archive-core, which reads
+# it back). `default-features = false` keeps the locked graph and vet surface
+# unchanged — the fixture uses `Stored` compression, which needs no backend, and
+# zip 2.4.2 is already in the tree (aff4's `deflate` feature).
+zip = { version = "2.4.2", default-features = false }
 
 [lints.rust]
 unsafe_code = "forbid"

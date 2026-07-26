@@ -185,3 +185,45 @@ fn aff4_logical_container_surfaces_a_browsable_filesystem() {
         .expect("read hello.txt");
     assert_eq!(&buf[..n], content);
 }
+
+#[test]
+fn dar_container_surfaces_a_browsable_filesystem() {
+    // A committed DAR archive (Denis Corbin Disk ARchiver) minted with the `dar`
+    // CLI — a producer wholly independent of the dar-core reader that decodes it
+    // (Doer-Checker). A `.dar` carries no ZIP magic, so it flows through the
+    // resolver to the ADR-0014 open_dar fallback and surfaces as a browsable tree.
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/loose.dar");
+
+    let ev = Vfs::new()
+        .open(std::path::Path::new(path))
+        .expect("open dar evidence");
+    let fs = ev
+        .fs
+        .expect("a loose-file DAR archive must surface as a browsable FileSystem (ADR-0014)");
+
+    // The captured tree reaches the top-level file and a nested leaf.
+    let all: Vec<String> = walk(fs.as_ref())
+        .expect("walk dar")
+        .into_iter()
+        .filter_map(|e| {
+            e.path
+                .last()
+                .map(|n| String::from_utf8_lossy(n).into_owned())
+        })
+        .collect();
+    assert!(all.iter().any(|n| n == "hello.txt"), "walk: {all:?}");
+    assert!(all.iter().any(|n| n == "deep.txt"), "walk: {all:?}");
+
+    // Resolve the top-level file and read its bytes back verbatim.
+    let root = fs.root();
+    let hello = fs
+        .lookup(root, b"hello.txt")
+        .expect("lookup hello.txt")
+        .expect("hello.txt present");
+    assert_eq!(fs.meta(hello).expect("meta hello").kind, NodeKind::File);
+    let mut buf = vec![0u8; 64];
+    let n = fs
+        .read_at(hello, StreamId::Default, 0, &mut buf)
+        .expect("read hello.txt");
+    assert_eq!(&buf[..n], b"hello from dar\n");
+}
