@@ -2079,4 +2079,45 @@ mod tests {
             "registry resolved spec tops with fs:ext: {resolved_uri}"
         );
     }
+
+    #[test]
+    fn plain_zip_surfaces_as_a_browsable_archive() {
+        // A plain zip carries the same `PK\x03\x04` local-file magic as a
+        // zip-framed AFF4 container, so the resolver's Aff4Decoder probes it
+        // `Maybe` then hard-errors on the missing `information.turtle`, shadowing
+        // the resolver's own archive layer. `Vfs::open` must route a non-AFF4 zip
+        // to the archive surface first (ADR-0014). The `zip` crate writes the
+        // fixture — an independent oracle to archive-core, which reads it back.
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            let mut zw = zip::ZipWriter::new(&mut cursor);
+            zw.start_file("hello.txt", opts).unwrap();
+            zw.write_all(b"hello from zip").unwrap();
+            zw.finish().unwrap();
+        }
+        let bytes = cursor.into_inner();
+
+        let mut f = tempfile::Builder::new().suffix(".zip").tempfile().unwrap();
+        f.write_all(&bytes).unwrap();
+        f.flush().unwrap();
+
+        let ev = Vfs::new().open(f.path()).expect("open plain-zip evidence");
+        let fs = ev
+            .fs
+            .expect("a plain zip must surface as a browsable archive FileSystem, not error");
+
+        let root = fs.root();
+        let hello = fs
+            .lookup(root, b"hello.txt")
+            .expect("lookup hello.txt")
+            .expect("hello.txt present");
+        assert_eq!(fs.meta(hello).expect("meta hello").kind, NodeKind::File);
+        let mut buf = vec![0u8; 64];
+        let n = fs
+            .read_at(hello, forensic_vfs::StreamId::Default, 0, &mut buf)
+            .expect("read hello.txt");
+        assert_eq!(&buf[..n], b"hello from zip");
+    }
 }

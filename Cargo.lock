@@ -823,6 +823,7 @@ dependencies = [
  "vhdx-core",
  "vmdk-core",
  "xfs-core",
+ "zip",
 ]
 
 [[package]]
