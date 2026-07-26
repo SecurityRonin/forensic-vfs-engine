@@ -100,3 +100,88 @@ fn archive_container_surfaces_a_browsable_filesystem() {
     assert!(all.iter().any(|n| n == "hello.txt"), "walk: {all:?}");
     assert!(all.iter().any(|n| n == "nested.txt"), "walk: {all:?}");
 }
+
+#[test]
+fn ad1_container_surfaces_a_browsable_filesystem() {
+    // Mint a single-segment AD1 (FTK Imager "Custom Content Image") with the
+    // canonical sample tree (root/hello.txt + root/sub/{a.bin,empty.dat}) using
+    // ad1-core's spec-faithful `testfix` builder — a flate2/RustCrypto encoder
+    // independent of the reader that decodes it back.
+    let built = ad1::testfix::build(ad1::testfix::sample_tree());
+    let f = write_tmp(&built.bytes, ".ad1");
+
+    let ev = Vfs::new().open(f.path()).expect("open ad1 evidence");
+    let fs = ev
+        .fs
+        .expect("an AD1 logical image must surface as a browsable FileSystem (ADR-0014)");
+
+    // A full walk reaches the top-level file and the nested leaf.
+    let all: Vec<String> = walk(fs.as_ref())
+        .expect("walk ad1")
+        .into_iter()
+        .filter_map(|e| {
+            e.path
+                .last()
+                .map(|n| String::from_utf8_lossy(n).into_owned())
+        })
+        .collect();
+    assert!(all.iter().any(|n| n == "hello.txt"), "walk: {all:?}");
+    assert!(all.iter().any(|n| n == "a.bin"), "walk: {all:?}");
+
+    // Resolve root/sub/a.bin and read its bytes back verbatim against the oracle.
+    let root = fs.root();
+    let sub = fs
+        .lookup(root, b"root")
+        .expect("lookup root")
+        .and_then(|top| fs.lookup(top, b"sub").expect("lookup sub"))
+        .expect("root/sub present");
+    let a = fs
+        .lookup(sub, b"a.bin")
+        .expect("lookup a.bin")
+        .expect("a.bin present");
+    let expected = ad1::testfix::incompressible(200_000);
+    assert_eq!(fs.meta(a).expect("meta a.bin").size, expected.len() as u64);
+    let mut buf = vec![0u8; expected.len()];
+    let mut filled = 0usize;
+    while filled < buf.len() {
+        let n = fs
+            .read_at(a, StreamId::Default, filled as u64, &mut buf[filled..])
+            .expect("read a.bin");
+        if n == 0 {
+            break;
+        }
+        filled += n;
+    }
+    assert_eq!(&buf[..filled], &expected[..], "a.bin bytes round-trip");
+}
+
+#[test]
+fn aff4_logical_container_surfaces_a_browsable_filesystem() {
+    // Mint a minimal AFF4-Logical (aff4:FileImage) container with aff4's
+    // `test-helpers` builder (an independent zip encoder). The stored MD5 is an
+    // unverified fixture field the reader never checks, so a placeholder suffices.
+    let content = b"hello aff4-logical\n";
+    let bytes =
+        aff4::testutil::test_aff4_logical("hello.txt", content, "00000000000000000000000000000000");
+    let f = write_tmp(&bytes, ".aff4");
+
+    let ev = Vfs::new()
+        .open(f.path())
+        .expect("open aff4-logical evidence");
+    let fs = ev.fs.expect(
+        "an AFF4-Logical (aff4:FileImage) container must surface as a browsable FileSystem (ADR-0014)",
+    );
+
+    // The captured file surfaces at the root and reads back verbatim.
+    let root = fs.root();
+    let hello = fs
+        .lookup(root, b"hello.txt")
+        .expect("lookup hello.txt")
+        .expect("hello.txt present");
+    assert_eq!(fs.meta(hello).expect("meta hello").kind, NodeKind::File);
+    let mut buf = vec![0u8; 64];
+    let n = fs
+        .read_at(hello, StreamId::Default, 0, &mut buf)
+        .expect("read hello.txt");
+    assert_eq!(&buf[..n], content);
+}

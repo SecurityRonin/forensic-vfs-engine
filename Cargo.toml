@@ -89,6 +89,12 @@ tempfile = "3"
 # per Doer-Checker. Pure-Rust, low-MSRV; already in the dependency graph via
 # archive-core's tar backend.
 tar = "0.4"
+# Spec-faithful fixture builders for the logical-container fallback tests: mint an
+# AD1 (ad1-core's `testfix`) and an AFF4-Logical (aff4's `test-helpers`) in memory
+# so the tests need no committed binary fixtures. Both mint with independent
+# encoders (flate2 / zip), an oracle distinct from the readers under test.
+ad1 = { version = "0.1.1", package = "ad1-core", features = ["testfix"] }
+aff4 = { version = "0.2", features = ["test-helpers"] }
 
 [lints.rust]
 unsafe_code = "forbid"
