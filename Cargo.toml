@@ -71,9 +71,10 @@ udf-forensic = { version = "0.2.1", features = ["vfs"] }
 archive-core = { version = "0.1.1", features = ["vfs"] }
 
 # Logical file containers (AD1 / AFF4-Logical / DAR), backing the ADR-0014
-# deep-path logical browsable FileSystem with direct standalone readers — all
-# MSRV 1.85, so the engine keeps its low MSRV (no disk-forensic → no
-# sevenz-rust2/1.96 pull from that edge; see the ADR).
+# deep-path logical browsable FileSystem with direct standalone readers
+# (ad1-core, dar-core, aff4 — all MSRV 1.85). This drops disk-forensic's 1.96
+# edge; the engine's MSRV floor is 1.93, set by archive-core -> sevenz-rust2
+# ^0.21 (7z, incl. its 0.21.1 path-traversal fix), NOT by these readers. See ADR-0014.
 #
 # AD1: ad1-core's `vfs` adapter targets forensic-vfs 0.7 (the engine's version),
 # so its `Ad1Vfs` is mounted directly as a `dyn FileSystem`.
