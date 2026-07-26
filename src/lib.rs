@@ -71,8 +71,27 @@ impl Vfs {
         // non-zip evidence file pays nothing; `container_kind` then declines a
         // physical/encrypted AFF4 (left to the resolver's decoder below).
         if base_has_zip_magic(&base)? {
-            if let Some(fs) = containerfs::open_aff4_logical(path)? {
-                return Ok(container_evidence(&base_spec, fs));
+            match aff4::container_kind(path) {
+                Ok(aff4::ContainerKind::Logical) => {
+                    if let Some(fs) = containerfs::open_aff4_logical(path)? {
+                        return Ok(container_evidence(&base_spec, fs));
+                    }
+                }
+                // A physical / encrypted AFF4 → the resolver's Aff4Decoder handles
+                // it below.
+                Ok(_) => {}
+                // Not an AFF4 at all — a plain zip. The resolver's Aff4Decoder
+                // claims the shared ZIP `PK` magic (probe = Maybe) then hard-errors
+                // on the missing `information.turtle`, shadowing the resolver's own
+                // archive layer, so a plain zip would abort resolution. Surface the
+                // loose archive here, ahead of the resolver, per ADR-0014. (7z/tar
+                // lack PK magic and are unaffected.)
+                Err(_) => {
+                    let name = path.file_name().and_then(|s| s.to_str());
+                    if let Some(fs) = containerfs::open_archive(&base, name)? {
+                        return Ok(container_evidence(&base_spec, fs));
+                    }
+                }
             }
         }
 
