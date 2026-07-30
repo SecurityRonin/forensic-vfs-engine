@@ -64,6 +64,16 @@ fat       = { version = "0.1.1", package = "fat-core", features = ["vfs"] }
 btrfs-core   = { version = "0.1.2", features = ["vfs"] }
 ufs          = { version = "0.1.2", package = "ufs-core", features = ["vfs"] }
 udf-forensic = { version = "0.2.1", features = ["vfs"] }
+# ZFS. IN-FLIGHT PATH DEP — deliberately version-less: the published
+# zfs-forensic-core 0.1.0 predates the `vfs` adapter feature, so a registry
+# requirement would resolve to a crate that has no `vfs` feature and fail. This
+# MUST become `{ version = "0.2", package = "zfs-forensic-core", features =
+# ["vfs"] }` once release-plz cuts the adapter (a `feat`, so 0.2.0); until then
+# the engine builds and tests locally but cannot publish. Tracked as the one
+# release blocker for the ZFS leg.
+zfs = { path = "../zfs-forensic/core", package = "zfs-forensic-core", features = [
+    "vfs",
+] }
 
 # Archive/compression layer — the `ArchiveOpen` opener that peels
 # gzip/bzip2/tar/zip/7z so archives resolve as a transparent layer. Its

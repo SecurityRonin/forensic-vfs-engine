@@ -378,6 +378,7 @@ pub fn default_openers() -> Openers {
         .filesystem(UdfProbe)
         .filesystem(UfsProbe)
         .filesystem(BtrfsProbe)
+        .filesystem(ZfsProbe)
         .volume_system(GptProbe)
         .volume_system(MbrProbe)
         .volume_system(ApmProbe)
@@ -767,6 +768,40 @@ impl FileSystemOpen for BtrfsProbe {
 
     fn open(&self, src: DynSource) -> VfsResult<DynFs> {
         let fs = btrfs_core::vfs::BtrfsFs::open(&*src)?;
+        Ok(Arc::new(fs))
+    }
+}
+
+/// ZFS filesystem prober: delegates to `zfs::vfs::zfs_probe` and mounts
+/// `zfs::vfs::ZfsFs` (the pool's root dataset).
+///
+/// Unlike every other filesystem here, ZFS is detected from a **parsed
+/// structure** rather than a byte magic, because it writes none. Its only
+/// structural marker is the uberblock ring, which begins at byte `131072` of each
+/// vdev label — exactly the resolver's `SNIFF_CAP`, so the head window
+/// `[0, 131072)` can never carry an uberblock (the same window limit that makes
+/// `BtrfsProbe` decline, one boundary further out). What *is* in the window is the
+/// label's XDR nvlist config, spanning `[16384, 131072)`; the prober parses it and
+/// requires the pool-identity keys every ZFS label carries (`version` +
+/// `pool_guid` + `vdev_tree`).
+///
+/// That is a definite `Yes`/`No`, never `Maybe`: a `Maybe` would run `open` on
+/// every otherwise-unrecognized source, and `ZfsFs::open` errors loudly on a
+/// non-ZFS image, which would turn the "clean unknown / empty container ⇒ `None`"
+/// contract into an error on (say) an all-zero decoded container.
+struct ZfsProbe;
+
+impl FileSystemOpen for ZfsProbe {
+    fn kind(&self) -> FsKind {
+        FsKind::ZFS
+    }
+
+    fn probe(&self, w: &SniffWindow) -> Confidence {
+        zfs::vfs::zfs_probe(w)
+    }
+
+    fn open(&self, src: DynSource) -> VfsResult<DynFs> {
+        let fs = zfs::vfs::ZfsFs::open(&src)?;
         Ok(Arc::new(fs))
     }
 }
@@ -1487,9 +1522,9 @@ mod tests {
     }
 
     #[test]
-    fn default_openers_registers_btrfs_ufs_udf() {
-        // The three new filesystem probers grow the registered set from 8 to 11
-        // and expose the BTRFS/UFS/UDF kinds so the resolver can auto-detect them.
+    fn default_openers_registers_btrfs_ufs_udf_zfs() {
+        // The BTRFS/UFS/UDF probers grew the registered set from 8 to 11; ZFS
+        // makes 12. Each kind is exposed so the resolver can auto-detect it.
         let kinds: Vec<FsKind> = default_openers()
             .filesystems()
             .iter()
@@ -1498,7 +1533,8 @@ mod tests {
         assert!(kinds.contains(&FsKind::BTRFS), "btrfs prober registered");
         assert!(kinds.contains(&FsKind::UFS), "ufs prober registered");
         assert!(kinds.contains(&FsKind::UDF), "udf prober registered");
-        assert_eq!(kinds.len(), 11, "8 existing + 3 new filesystem probers");
+        assert!(kinds.contains(&FsKind::ZFS), "zfs prober registered");
+        assert_eq!(kinds.len(), 12, "8 original + btrfs/ufs/udf + zfs");
     }
 
     #[test]

@@ -823,6 +823,7 @@ dependencies = [
  "vhdx-core",
  "vmdk-core",
  "xfs-core",
+ "zfs-forensic-core",
  "zip",
 ]
 
@@ -1976,6 +1977,18 @@ name = "xxhash-rust"
 version = "0.8.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985eec839aaf2a1270af8f4ebcf63cf9401cfd90f0902f97c28d9f104ffbde72"
+
+[[package]]
+name = "zfs-forensic-core"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "forensic-vfs",
+ "lz4_flex",
+ "ruzstd 0.8.3",
+ "sha2 0.10.9",
+ "thiserror",
+]
 
 [[package]]
 name = "zip"

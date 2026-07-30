@@ -253,7 +253,7 @@ fn zap_dnode(phys: u64) -> [u8; DNODE_SIZE] {
 
 /// A `BLOCK`-byte objset block whose meta-dnode points at the object dnode array
 /// at `dnode_array_phys`; `os_type` @704 = `DMU_OST_ZFS` (2).
-fn objset_block(dnode_array_phys: u64, dnodes: usize) -> Vec<u8> {
+fn objset_block(dnode_array_phys: u64, dnodes: usize, os_type: u64) -> Vec<u8> {
     let mut b = vec![0u8; BLOCK];
     b[0] = 10;
     b[1] = 12;
@@ -264,9 +264,14 @@ fn objset_block(dnode_array_phys: u64, dnodes: usize) -> Vec<u8> {
     b[8..10].copy_from_slice(&dblk_sectors.to_le_bytes());
     b[16..24].copy_from_slice(&0u64.to_le_bytes()); // maxblkid = 0
     write_blkptr(&mut b, 64, dnode_array_phys, arr_bytes.max(512));
-    b[704..712].copy_from_slice(&2u64.to_le_bytes()); // os_type = DMU_OST_ZFS
+    b[704..712].copy_from_slice(&os_type.to_le_bytes()); // os_type
     b
 }
+
+/// `DMU_OST_META` — the objset type of the MOS.
+const DMU_OST_META: u64 = 1;
+/// `DMU_OST_ZFS` — the objset type of a ZPL filesystem dataset.
+const DMU_OST_ZFS: u64 = 2;
 
 /// A `dsl_dir_phys_t` bonus: `dd_head_dataset_obj` @8.
 fn dsl_dir_bonus(head_dataset_obj: u64) -> Vec<u8> {
@@ -350,7 +355,7 @@ fn walkable_image() -> Vec<u8> {
     img[UBERBLOCK_RING_OFFSET..UBERBLOCK_RING_OFFSET + ub.len()].copy_from_slice(&ub);
 
     // --- MOS objset block (at the rootbp DVA) ---
-    let mos_objset = objset_block(mos_dnode_arr_phys, 4);
+    let mos_objset = objset_block(mos_dnode_arr_phys, 4, DMU_OST_META);
     img[mos_phys as usize..mos_phys as usize + mos_objset.len()].copy_from_slice(&mos_objset);
 
     // --- MOS dnode array: objects 0..=3 ---
@@ -375,7 +380,7 @@ fn walkable_image() -> Vec<u8> {
     img[obj_dir_off..obj_dir_off + obj_dir.len()].copy_from_slice(&obj_dir);
 
     // --- ZPL objset block ---
-    let zpl_objset = objset_block(zpl_dnode_arr_phys, 7);
+    let zpl_objset = objset_block(zpl_dnode_arr_phys, 7, DMU_OST_ZFS);
     let zpl_objset_off = zpl_objset_phys as usize;
     img[zpl_objset_off..zpl_objset_off + zpl_objset.len()].copy_from_slice(&zpl_objset);
 
