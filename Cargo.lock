@@ -1980,7 +1980,9 @@ checksum = "985eec839aaf2a1270af8f4ebcf63cf9401cfd90f0902f97c28d9f104ffbde72"
 
 [[package]]
 name = "zfs-forensic-core"
-version = "0.1.0"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a6b3929664461940b8d555ee7ee8f88a6fbb1623f8b81822cc6f5d7e3ac4429"
 dependencies = [
  "flate2",
  "forensic-vfs",
