@@ -255,10 +255,6 @@ criteria = "safe-to-deploy"
 version = "0.4.3"
 criteria = "safe-to-deploy"
 
-[[exemptions.glob]]
-version = "0.3.3"
-criteria = "safe-to-deploy"
-
 [[exemptions.hashbrown]]
 version = "0.15.5"
 criteria = "safe-to-deploy"
@@ -273,10 +269,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.iana-time-zone]]
 version = "0.1.65"
-criteria = "safe-to-deploy"
-
-[[exemptions.indexmap]]
-version = "2.14.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.inout]]
@@ -316,7 +308,7 @@ version = "0.4.33"
 criteria = "safe-to-deploy"
 
 [[exemptions.lru]]
-version = "0.12.5"
+version = "0.18.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.lz4_flex]]
@@ -375,10 +367,6 @@ criteria = "safe-to-deploy"
 version = "0.41.0"
 criteria = "safe-to-deploy"
 
-[[exemptions.quote]]
-version = "1.0.47"
-criteria = "safe-to-deploy"
-
 [[exemptions.r-efi]]
 version = "6.0.0"
 criteria = "safe-to-deploy"
@@ -413,10 +401,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.ruzstd]]
 version = "0.8.3"
-criteria = "safe-to-deploy"
-
-[[exemptions.semver]]
-version = "1.0.28"
 criteria = "safe-to-deploy"
 
 [[exemptions.serde]]
