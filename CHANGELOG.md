@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9](https://github.com/SecurityRonin/forensic-vfs-engine/compare/forensic-vfs-engine-v0.1.8...forensic-vfs-engine-v0.1.9) - 2026-08-06
+
+### Fixed
+
+- *(security)* refresh the lock so lru reaches the patched line (RUSTSEC-2026-0002)
+
 ## [0.1.8](https://github.com/SecurityRonin/forensic-vfs-engine/compare/forensic-vfs-engine-v0.1.7...forensic-vfs-engine-v0.1.8) - 2026-08-04
 
 ### Added
