@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10](https://github.com/SecurityRonin/forensic-vfs-engine/compare/forensic-vfs-engine-v0.1.9...forensic-vfs-engine-v0.1.10) - 2026-08-09
+
+### Fixed
+
+- *(gitignore)* unanchor the target rule so nested cargo projects are ignored
+- *(deps)* widen state-history-forensic to 0.2
+
 ## [0.1.9](https://github.com/SecurityRonin/forensic-vfs-engine/compare/forensic-vfs-engine-v0.1.8...forensic-vfs-engine-v0.1.9) - 2026-08-06
 
 ### Fixed
