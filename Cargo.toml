@@ -34,7 +34,7 @@ exclude = [
 forensic-vfs = "0.7"
 # The generic layer resolver: the `SourceOpen` extension trait over `Openers`.
 forensic-vfs-resolver = "0.3"
-state-history-forensic = "0.1"
+state-history-forensic = "0.2"
 
 # Batteries-included: every fleet reader is compiled in, non-optional, so the
 # zero-config build resolves the whole container/volume/filesystem stack. Each
